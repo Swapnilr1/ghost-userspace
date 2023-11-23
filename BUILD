@@ -119,6 +119,30 @@ cc_binary(
     ],
 )
 
+cc_binary(
+    name = "agent_ule",
+    srcs = [
+        "schedulers/ule/ule_agent.cc",
+        "schedulers/ule/ule_scheduler.cc",
+        "schedulers/ule/ule_scheduler.h",
+    ],
+    copts = compiler_flags,
+    deps = [
+        ":agent",
+        ":base",
+        ":topology",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/debugging:symbolize",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/numeric:int128",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+
 cc_library(
     name = "cfs_scheduler",
     srcs = [
