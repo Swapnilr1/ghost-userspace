@@ -1,8 +1,3 @@
-// Copyright 2022 Google LLC
-//
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file or at
-// https://developers.google.com/open-source/licenses/bsd
 
 #include <cstdint>
 #include <string>
@@ -27,7 +22,7 @@ ABSL_FLAG(absl::Duration, latency, absl::Milliseconds(10),
 
 namespace ghost {
 
-static void ParseAgentConfig(CfsConfig* config) {
+static void ParseAgentConfig(UleConfig* config) {
   CpuList ghost_cpus =
       MachineTopology()->ParseCpuStr(absl::GetFlag(FLAGS_ghost_cpus));
   CHECK(!ghost_cpus.Empty());
@@ -52,14 +47,14 @@ int main(int argc, char* argv[]) {
   absl::InitializeSymbolizer(argv[0]);
   absl::ParseCommandLine(argc, argv);
 
-  ghost::CfsConfig config;
-  ghost::ParseAgentConfig(&config);
+  ghost::UleConfig config;
+  // ghost::ParseAgentConfig(&config);
 
   printf("Initializing...\n");
 
   // Using new so we can destruct the object before printing Done
-  auto uap = new ghost::AgentProcess<ghost::FullCfsAgent<ghost::LocalEnclave>,
-                                     ghost::CfsConfig>(config);
+  auto uap = new ghost::AgentProcess<ghost::FullUleAgent<ghost::LocalEnclave>,
+                                     ghost::UleConfig>(config);
 
   ghost::GhostHelper()->InitCore();
   printf("Initialization complete, ghOSt active.\n");
@@ -83,10 +78,10 @@ int main(int argc, char* argv[]) {
   });
 
   // TODO: this is racy - uap could be deleted already
-  ghost::GhostSignals::AddHandler(SIGUSR1, [uap](int) {
-    uap->Rpc(ghost::CfsScheduler::kDebugRunqueue);
-    return false;
-  });
+  // ghost::GhostSignals::AddHandler(SIGUSR1, [uap](int) {
+  //   uap->Rpc(ghost::UleScheduler::kDebugRunqueue);
+  //   return false;
+  // });
 
   exit.WaitForNotification();
 
