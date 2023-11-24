@@ -48,7 +48,7 @@ int main(int argc, char* argv[]) {
   absl::ParseCommandLine(argc, argv);
 
   ghost::UleConfig config;
-  // ghost::ParseAgentConfig(&config);
+  ghost::ParseAgentConfig(&config);
 
   printf("Initializing...\n");
 
@@ -78,10 +78,10 @@ int main(int argc, char* argv[]) {
   });
 
   // TODO: this is racy - uap could be deleted already
-  // ghost::GhostSignals::AddHandler(SIGUSR1, [uap](int) {
-  //   uap->Rpc(ghost::UleScheduler::kDebugRunqueue);
-  //   return false;
-  // });
+  ghost::GhostSignals::AddHandler(SIGUSR1, [uap](int) {
+    uap->Rpc(ghost::UleScheduler::kDebugRunqueue);
+    return false;
+  });
 
   exit.WaitForNotification();
 

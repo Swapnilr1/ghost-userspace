@@ -39,7 +39,98 @@
 ABSL_FLAG(bool, experimental_enable_idle_load_balancing, true,
           "Experimental flag to enable idle load balancing.");
 
+
 namespace ghost {
+
+
+int UleRunq::runq_check() {
+  return rq_status != 0;
+}
+
+
+void UleRunq::runq_add(UleTask *task, int flags) {
+	int pri = task->td_priority / RQ_PPQ;
+	task->td_rqindex = pri;
+	runq_setbit(pri);
+	if (flags & SRQ_PREEMPTED) {
+		runq_[pri].push_front(task);
+    task->td_runq = runq_[pri].begin();
+	} else {
+		runq_[pri].push_back(task);
+    task->td_runq = std::prev(runq_[pri].end());
+	}
+}
+void UleRunq::runq_add_pri(UleTask *task, u_char pri, int flags) {
+	CHECK(pri < RQ_NQS);
+	task->td_rqindex = pri;
+	runq_setbit(pri);
+	if (flags & SRQ_PREEMPTED) {
+		runq_[pri].push_front(task);
+    task->td_runq = runq_[pri].begin();
+	} else {
+		runq_[pri].push_back(task);
+    task->td_runq = std::prev(runq_[pri].end());
+	}
+}
+
+UleTask* UleRunq::runq_choose()
+{
+	std::list<UleTask*> *rqh;
+	UleTask *td;
+	int pri;
+
+	if ((pri = runq_findbit()) != -1) {
+		rqh = &runq_[pri];
+		td = rqh->front();
+		CHECK(td != NULL);
+		
+		return (td);
+	}
+	return NULL;
+}
+
+UleTask* UleRunq::runq_choose_from(u_char idx)
+{
+	std::list<UleTask*> *rqh;
+	UleTask *td;
+  int pri;
+	if ((pri = runq_findbit_from(idx)) != -1) {
+		rqh = &runq_[pri];
+		td = rqh->front();
+		CHECK(td != NULL);
+		return (td);
+	}
+
+	return NULL;
+}
+
+void UleRunq::runq_remove(UleTask *td)
+{
+	runq_remove_idx(td, NULL);
+}
+
+void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
+{
+	std::list<UleTask*> *rqh;
+	u_char pri;
+
+  // TODO: Check later if these checks make sense
+	// CHECK(td->td_flags & TDF_INMEM); // "runq_remove_idx: thread swapped out"
+	pri = td->td_rqindex;
+	CHECK(pri < RQ_NQS); // ("runq_remove_idx: Invalid index %d\n", pri));
+	rqh = &runq_[pri];
+  runq_[pri].erase(td->td_runq);
+	
+	if (rqh->empty()) {
+		//CTR0(KTR_RUNQ, "runq_remove_idx: empty");
+		runq_clrbit(pri);
+		if (idx != NULL && *idx == pri)
+			*idx = (pri + 1) % RQ_NQS;
+	}
+}
+
+
+
 
 // void PrintDebugTaskMessage(std::string message_name, CpuState* cs,
 //                            UleTask* task) {
@@ -118,7 +209,10 @@ void UleScheduler::StartMigrateCurrTask() {
 
 
 void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
- 
+  const ghost_msg_payload_task_new* payload =
+      static_cast<const ghost_msg_payload_task_new*>(msg.payload());
+
+  std::cout << "New Task arrived: " << task->gtid.describe() << "\n";
 }
 
 void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
@@ -222,7 +316,9 @@ void UleAgent::AgentThread() {
   }
   SignalReady();
   WaitForEnclaveReady();
-
+  while (!Finished()) {
+    
+  }
   
 }
 
