@@ -226,4 +226,83 @@ void UleAgent::AgentThread() {
   
 }
 
+/*
+ * Print the status of a per-cpu thread queue.  Should be a ddb show cmd.
+ */
+static void __unused
+tdq_print(int cpu)
+{
+	struct CpuState *tdq;
+
+	tdq = TDQ_CPU(cpu);
+
+	printf("tdq %d:\n", TDQ_ID(tdq));
+	printf("\tlock            %p\n", TDQ_LOCKPTR(tdq));
+	printf("\tLock name:      %s\n", tdq->tdq_name);
+	printf("\tload:           %d\n", tdq->tdq_load);
+	printf("\tswitch cnt:     %d\n", tdq->tdq_switchcnt);
+	printf("\told switch cnt: %d\n", tdq->tdq_oldswitchcnt);
+	printf("\ttimeshare idx:  %d\n", tdq->tdq_idx);
+	printf("\ttimeshare ridx: %d\n", tdq->tdq_ridx);
+	printf("\tload transferable: %d\n", tdq->tdq_transferable);
+	printf("\tlowest priority:   %d\n", tdq->tdq_lowpri);
+	printf("\trealtime runq:\n");
+	runq_print(&tdq->tdq_realtime);
+	printf("\ttimeshare runq:\n");
+	runq_print(&tdq->tdq_timeshare);
+	printf("\tidle runq:\n");
+	runq_print(&tdq->tdq_idle);
+}
+
+/*
+ * Add a thread to the actual run-queue.  Keeps transferable counts up to
+ * date with what is actually on the run-queue.  Selects the correct
+ * queue position for timeshare threads.
+ */
+__inline void CpuState::tdq_runq_add(UleTask *td, int flags)
+{
+	UleTask *ts;
+	u_char pri;
+
+  //TODO: modify this to assert for locks we are using 
+	// TDQ_LOCK_ASSERT(this, MA_OWNED);
+	// THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
+
+	pri = td->td_priority;
+	// ts = td_get_sched(td);
+	TD_SET_RUNQ(td);
+	if (THREAD_CAN_MIGRATE(td)) {
+		tdq_transferable++;
+		td->ts_flags |= TSF_XFERABLE;
+	}
+	if (pri < PRI_MIN_BATCH) {
+		td->ts_runq = &tdq_realtime;
+	} else if (pri <= PRI_MAX_BATCH) {
+		td->ts_runq = &tdq_timeshare;
+		CHECK(pri <= PRI_MAX_BATCH && pri >= PRI_MIN_BATCH,
+			("Invalid priority %d on timeshare runq", pri));
+		/*
+		 * This queue contains only priorities between MIN and MAX
+		 * batch.  Use the whole queue to represent these values.
+		 */
+		if ((flags & (SRQ_BORROWING|SRQ_PREEMPTED)) == 0) {
+			pri = RQ_NQS * (pri - PRI_MIN_BATCH) / PRI_BATCH_RANGE;
+			pri = (pri + tdq_idx) % RQ_NQS;
+			/*
+			 * This effectively shortens the queue by one so we
+			 * can have a one slot difference between idx and
+			 * ridx while we wait for threads to drain.
+			 */
+			if (tdq_ridx != tdq_idx &&
+			    pri == tdq_ridx)
+				pri = (unsigned char)(pri - 1) % RQ_NQS;
+		} else
+			pri = tdq->tdq_ridx;
+		runq_add_pri(ts->ts_runq, td, pri, flags);
+		return;
+	} else
+		td->ts_runq = &tdq_idle;
+	(td->ts_runq, td, flags);
+}
+
 }  //  namespace ghost
