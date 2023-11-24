@@ -23,24 +23,73 @@ static const absl::Time start = absl::Now();
 
 namespace ghost {
 
+static constexpr int SRQ_BORING	= 0x0000;		/* No special circumstances. */
+static constexpr int SRQ_YIELDING	= 0x0001;		/* We are yielding (from mi_switch). */
+static constexpr int SRQ_OURSELF	= 0x0002;		/* It is ourself (from mi_switch). */
+static constexpr int SRQ_INTR	= 0x0004;		/* It is probably urgent. */
+static constexpr int SRQ_PREEMPTED = 0x0008;		/* has been preempted.. be kind */
+static constexpr int SRQ_BORROWING = 0x0010;		/* Priority updated due to prio_lend */
+static constexpr int SRQ_HOLD =	0x0020;		/* Return holding original td lock */
+static constexpr int SRQ_HOLDTD =	0x0040;		/* Return holding td lock */
+
+
 class UleTask;
 
 class UleRunq {
 
   static constexpr int RQ_NQS	=	64;		/* Number of run queues. */
- public:
+  static constexpr int RQ_PPQ	=	4;		/* Priorities per queue. */
+public:
   explicit UleRunq();
   UleRunq(const UleRunq&) = delete;
   UleRunq& operator=(UleRunq&) = delete;
 
-  
+  void runq_add(UleTask *task, int flags);
+  void runq_add_pri(UleTask *task, u_char pri, int flags);
+
+
+  /*
+  * Find the highest priority process on the run queue.
+  */
+  UleTask* runq_choose();
+  UleTask* runq_choose_from(u_char);
+
+  void runq_remove(UleTask *td);
+  void runq_remove_idx(UleTask *td, u_char *idx);
+
+
+  int runq_check(); // Basically isEmpty - but uses rq_status
+
   // TODO: Add all methods required by RunQ
 
   // Protects this runqueue and the state of any task assoicated with the rq.
   mutable absl::Mutex mu_;
 
  private:
-  std::list<UleTask*> runq_[RQ_NQS]; 
+  inline void runq_setbit(int pri) {
+    rq_status |= (1ul<< (pri & 63));
+  }
+  inline void runq_clrbit(int pri) {
+    rq_status &= ~(1ul<< (pri & 63));
+  }
+  inline int runq_findbit() {
+    if (rq_status != 0) {
+      return __builtin_clzl(rq_status);
+    }
+    return -1;
+  }
+  inline int runq_findbit_from(int pri) {
+    uint64_t mask = ((uint64_t)-1) << (pri & 63);
+    mask = rq_status & mask;
+    if (mask == 0)
+			return -1;
+		return __builtin_clzl(mask);
+  }
+
+  
+  std::list<UleTask*> runq_[RQ_NQS];
+  uint64_t rq_status; // Bitset of non-empty queues
+
 };
 
 // This corresponds to (struct thread + struct td_sched) in FreeBSD
@@ -50,6 +99,8 @@ struct UleTask : public Task<> {
   ~UleTask() override {}
 
   // <Fields from struct thread - may need more of them later
+  std::list<UleTask*>::iterator td_runq;
+  u_char		td_rqindex;	/* (t) Run queue index. */
   u_char		td_base_pri;	/* (t) Thread base kernel priority. */
 	u_char		td_priority;	/* (t) Thread active priority. */
 	u_char		td_pri_class;	/* (t) Scheduling class. */
