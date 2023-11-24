@@ -153,7 +153,7 @@ UleScheduler::UleScheduler(Enclave* enclave, CpuList cpulist,
           absl::GetFlag(FLAGS_experimental_enable_idle_load_balancing)) {
 	for (const Cpu& cpu : cpus()) {
     CpuState* cs = cpu_state(cpu);
-    cs->id = cpu.id();
+    cs->tdq_id = cpu.id();
 
     {
       //absl::MutexLock l(&cs->run_queue .mu_);
@@ -349,15 +349,13 @@ void UleAgent::AgentThread() {
  */
 __inline void CpuState::tdq_runq_add(UleTask *td, int flags)
 {
-	UleTask *ts;
 	u_char pri;
 
   //TODO: modify this to assert for locks we are using 
-	// TDQ_LOCK_ASSERT(this, MA_OWNED);
-	// THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
+	tdq_lock.AssertHeld();// TDQ_LOCK_ASSERT(this, MA_OWNED);
+	// TODO: THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
 
 	pri = td->td_priority;
-	// ts = td_get_sched(td);
 	TD_SET_STATE(td, UleTask::TDS_RUNQ);
 	if (td->td_pinned == 0) { // Thread can migrate
 		tdq_transferable++;
@@ -385,11 +383,215 @@ __inline void CpuState::tdq_runq_add(UleTask *td, int flags)
 				pri = (unsigned char)(pri - 1) % UleRunq::RQ_NQS;
 		} else
 			pri = tdq_ridx;
-		ts->ts_runq->runq_add_pri(td, pri, flags);
+		td->ts_runq->runq_add_pri(td, pri, flags);
 		return;
 	} else
 		td->ts_runq = &tdq_idle;
 	td->ts_runq->runq_add(td, flags);
 }
+
+/*
+ * Initialize a thread queue.
+ */
+void CpuState::tdq_setup(int id)
+{
+	this->tdq_id=id;
+	//TODO: initialize mutex
+}
+
+inline int CpuState::sched_shouldpreempt(int pri, int cpri, int remote)
+{
+	/*
+	 * If the new priority is not better than the current priority there is
+	 * nothing to do.
+	 */
+	if (pri >= cpri)
+		return (0);
+	/*
+	 * Always preempt idle.
+	 */
+	if (cpri >= PRI_MIN_IDLE)
+		return (1);
+	/*
+	 * If preemption is disabled don't preempt others.
+	 */
+	if (preempt_thresh == 0)
+		return (0);
+	/*
+	 * Preempt if we exceed the threshold.
+	 */
+	if (pri <= preempt_thresh)
+		return (1);
+	/*
+	 * If we're interactive or better and there is non-interactive
+	 * or worse running preempt only remote processors.
+	 */
+	if (remote && pri <= PRI_MAX_INTERACT && cpri > PRI_MAX_INTERACT)
+		return (1);
+	return (0);
+}
+
+
+
+/*
+ * Bound timeshare latency by decreasing slice size as load increases.  We
+ * consider the maximum latency as the sum of the threads waiting to run
+ * aside from curthread and target no more than sched_slice latency but
+ * no less than sched_slice_min runtime.
+ */
+inline int CpuState::tdq_slice(){
+	int load;
+		/*
+	 * It is safe to use sys_load here because this is called from
+	 * contexts where timeshare threads are running and so there
+	 * cannot be higher priority load in the system.
+	 */
+	load = tdq_sysload - 1;
+	if (load >= SCHED_SLICE_MIN_DIVISOR)
+		return (sched_slice_min);
+	if (load <= 1)
+		return (sched_slice);
+	return (sched_slice / load);
+}
+
+/* 
+ * Remove a thread from a run-queue.  This typically happens when a thread
+ * is selected to run.  Running threads are not on the queue and the
+ * transferable count does not reflect them.
+ */
+__inline void CpuState::tdq_runq_rem(UleTask *ts)
+{
+	tdq_lock.AssertHeld();
+
+	// TODO: THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
+	CHECK(ts->ts_runq != NULL);
+	if (ts->ts_flags & TSF_XFERABLE) {
+		tdq_transferable--;
+		ts->ts_flags &= ~TSF_XFERABLE;
+	}
+	if (ts->ts_runq == & tdq_timeshare) {
+		if (tdq_idx != tdq_ridx)
+			ts->ts_runq->runq_remove_idx(ts, &tdq_ridx);
+		else
+			ts->ts_runq->runq_remove_idx(ts, NULL);
+	} else
+		ts->ts_runq->runq_remove(ts);
+}
+
+/*
+ * Load is maintained for all threads RUNNING and ON_RUNQ.  Add the load
+ * for this thread to the referenced thread queue.
+ */
+void CpuState::tdq_load_add(UleTask *td)
+{
+
+	tdq_lock.AssertHeld();//TDQ_LOCK_ASSERT(tdq, MA_OWNED);
+	//TODO: THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
+
+	tdq_load++;
+	if ((td->td_flags & TDF_NOLOAD) == 0)
+		tdq_sysload++;
+}
+
+/*
+ * Remove the load from a thread that is transitioning to a sleep state or
+ * exiting.
+ */
+void CpuState::tdq_load_rem(UleTask *td)
+{
+	tdq_lock.AssertHeld();//TDQ_LOCK_ASSERT(tdq, MA_OWNED);
+	//TODO: THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
+	CHECK(tdq_load != 0);
+
+	tdq_load--;
+	if ((td->td_flags & TDF_NOLOAD) == 0)
+		tdq_sysload--;
+}
+
+/*
+ * Pick the highest priority task we have and return it.
+ */
+UleTask* CpuState::tdq_choose()
+{
+	UleTask *td;
+	tdq_lock.AssertHeld();
+	td = tdq_realtime.runq_choose();
+	if (td != NULL)
+		return (td);
+	td = tdq_timeshare.runq_choose_from(tdq_ridx);
+	if (td != NULL) {
+		CHECK(td->td_priority >= PRI_MIN_BATCH);
+		return (td);
+	}
+	td = tdq_idle.runq_choose();
+	if (td != NULL) {
+		CHECK(td->td_priority >= PRI_MIN_IDLE);
+		return (td);
+	}
+	return (NULL);
+}
+	
+
+/*
+ * Set lowpri to its exact value by searching the run-queue and
+ * evaluating curthread.  curthread may be passed as an optimization.
+ */
+void CpuState::tdq_setlowpri(UleTask *ctd)
+{
+	UleTask *td;
+	tdq_lock.AssertHeld();
+	if (ctd == NULL)
+		ctd = tdq_curthread;
+	td = this->tdq_choose();
+	if (td == NULL || td->td_priority > ctd->td_priority)
+		tdq_lowpri = ctd->td_priority;
+	else
+		tdq_lowpri = td->td_priority;
+}
+
+
+/*
+ * Add a thread to a thread queue.  Select the appropriate runq and add the
+ * thread to it.  This is the internal function called when the tdq is
+ * predetermined.
+ */
+int CpuState::tdq_add( UleTask *td, int flags)
+{
+	int lowpri;
+
+	tdq_lock.AssertHeld();
+	// THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
+	CHECK((td->td_inhibitors == 0));
+	CHECK(td->td_state== UleTask::TDS_RUNNING || td->td_state == UleTask::TDS_CAN_RUN);
+	CHECK(td->td_flags & TDF_INMEM);
+
+	lowpri = tdq_lowpri;
+	if (td->td_priority < lowpri)
+		tdq_lowpri = td->td_priority;
+	this->tdq_runq_add(td, flags);
+	this->tdq_load_add(td);
+	return (lowpri);
+}
+
+
+/*
+ * Attempt to steal a thread in priority order from a thread queue.
+ */
+UleTask * CpuState::tdq_steal(int cpu)
+{
+	UleTask *td;
+	tdq_lock.AssertHeld();
+	//TODO: runq_steal needs to be implemented 
+	// if ((td = tdq_realtime.runq_steal(cpu)) != NULL)
+	// 	return td;
+	// if ((td = tdq_timeshare.runq_steal_from(cpu, tdq_ridx)) != NULL)
+	// 	return td;
+	// return (tdq_idle.runq_steal(cpu));
+
+	return NULL;
+}
+
+
+
 
 }  //  namespace ghost
