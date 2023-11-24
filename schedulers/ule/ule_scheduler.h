@@ -132,6 +132,165 @@ struct UleTask : public Task<> {
   // <Fields from struct td_sched > 
 };
 
+struct CpuState {
+  #define PRIO_MIN        -20
+#define PRIO_MAX        20
+
+
+/* flags kept in ts_flags */
+#define	TSF_BOUND	0x0001		/* Thread can not migrate. */
+#define	TSF_XFERABLE	0x0002		/* Thread was added as transferable. */
+
+  /* Lockless accessors. */
+  #define	TDQ_LOAD(tdq)		atomic_load_int(&(tdq)->tdq_load)
+  #define	TDQ_TRANSFERABLE(tdq)	atomic_load_int(&(tdq)->tdq_transferable)
+  #define	TDQ_SWITCHCNT(tdq)	(atomic_load_short(&(tdq)->tdq_switchcnt) + \
+          atomic_load_short(&(tdq)->tdq_oldswitchcnt))
+  #define	TDQ_SWITCHCNT_INC(tdq)	(atomic_store_short(&(tdq)->tdq_switchcnt, \
+          atomic_load_short(&(tdq)->tdq_switchcnt) + 1))
+
+  #define	TDQ_SELF()	((struct CpuState *)PCPU_GET(sched))
+  #define	TDQ_CPU(x)	(DPCPU_ID_PTR((x), tdq))
+  #define	TDQ_ID(x)	((x)->tdq_id)
+
+  //static CpuState	tdq_cpu;
+
+
+  #define	TDQ_LOCK_ASSERT(t, type)	mtx_assert(TDQ_LOCKPTR((t)), (type))
+  #define	TDQ_LOCK(t)		mtx_lock_spin(TDQ_LOCKPTR((t)))
+  #define	TDQ_LOCK_FLAGS(t, f)	mtx_lock_spin_flags(TDQ_LOCKPTR((t)), (f))
+  #define	TDQ_TRYLOCK(t)		mtx_trylock_spin(TDQ_LOCKPTR((t)))
+  #define	TDQ_TRYLOCK_FLAGS(t, f)	mtx_trylock_spin_flags(TDQ_LOCKPTR((t)), (f))
+  #define	TDQ_UNLOCK(t)		mtx_unlock_spin(TDQ_LOCKPTR((t)))
+#define	TDQ_LOCKPTR(t)		((struct mtx *)(&(t)->tdq_lock))
+
+#define	TD_SET_STATE(td, state)	(td)->td_state = state
+
+
+#define	PRI_MIN_TIMESHARE	(88)
+#define	PRI_MAX_TIMESHARE	(PRI_MIN_IDLE - 1)
+
+#define	PUSER			(PRI_MIN_TIMESHARE)
+
+#define	PRI_MIN_IDLE		(224)
+#define	PRI_MAX_IDLE		(PRI_MAX)
+
+/*
+ * These macros determine priorities for non-interactive threads.  They are
+ * assigned a priority based on their recent cpu utilization as expressed
+ * by the ratio of ticks to the tick total.  NHALF priorities at the start
+ * and end of the MIN to MAX timeshare range are only reachable with negative
+ * or positive nice respectively.
+ *
+ * PRI_RANGE:	Priority range for utilization dependent priorities.
+ * PRI_NRESV:	Number of nice values.
+ * PRI_TICKS:	Compute a priority in PRI_RANGE from the ticks count and total.
+ * PRI_NICE:	Determines the part of the priority inherited from nice.
+ */
+#define	SCHED_PRI_NRESV		(PRIO_MAX - PRIO_MIN)
+#define	SCHED_PRI_NHALF		(SCHED_PRI_NRESV / 2)
+#define	SCHED_PRI_MIN		(PRI_MIN_BATCH + SCHED_PRI_NHALF)
+#define	SCHED_PRI_MAX		(PRI_MAX_BATCH - SCHED_PRI_NHALF)
+#define	SCHED_PRI_RANGE		(SCHED_PRI_MAX - SCHED_PRI_MIN + 1)
+#define	SCHED_PRI_TICKS(ts)						\
+    (SCHED_TICK_HZ((ts)) /						\
+    (roundup(SCHED_TICK_TOTAL((ts)), SCHED_PRI_RANGE) / SCHED_PRI_RANGE))
+#define	SCHED_PRI_NICE(nice)	(nice)
+
+/*
+ * Priority ranges used for interactive and non-interactive timeshare
+ * threads.  The timeshare priorities are split up into four ranges.
+ * The first range handles interactive threads.  The last three ranges
+ * (NHALF, x, and NHALF) handle non-interactive threads with the outer
+ * ranges supporting nice values.
+ */
+#define	PRI_TIMESHARE_RANGE	(PRI_MAX_TIMESHARE - PRI_MIN_TIMESHARE + 1)
+#define	PRI_INTERACT_RANGE	((PRI_TIMESHARE_RANGE - SCHED_PRI_NRESV) / 2)
+#define	PRI_BATCH_RANGE		(PRI_TIMESHARE_RANGE - PRI_INTERACT_RANGE)
+
+#define	PRI_MIN_INTERACT	PRI_MIN_TIMESHARE
+#define	PRI_MAX_INTERACT	(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE - 1)
+#define	PRI_MIN_BATCH		(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE)
+#define	PRI_MAX_BATCH		PRI_MAX_TIMESHARE
+
+/* sched_add arguments (formerly setrunqueue) */
+// #define	SRQ_BORING	0x0000		/* No special circumstances. */
+// #define	SRQ_YIELDING	0x0001		/* We are yielding (from mi_switch). */
+// #define	SRQ_OURSELF	0x0002		/* It is ourself (from mi_switch). */
+// #define	SRQ_INTR	0x0004		/* It is probably urgent. */
+// #define	SRQ_HOLD	0x0020		/* Return holding original td lock */
+// #define	SRQ_HOLDTD	0x0040		/* Return holding td lock */
+
+static constexpr uint16_t SRQ_PREEMPTED = static_cast<uint16_t>(0x0008);		/* has been preempted.. be kind */
+static constexpr uint16_t SRQ_BORROWING = static_cast<uint16_t>(0x0010); /* Priority updated due to prio_lend */	
+
+
+  // current points to the CfsTask that we most recently picked to run on the
+  // cpu. Note, we say most recently picked as a txn could fail leaving us with
+  // current pointing to a task that is not currently on cpu.
+  UleTask* current = nullptr;
+
+
+  // // pointer to the kernel ipc queue.
+  std::unique_ptr<Channel> channel = nullptr;
+
+  
+  // the run queue responsible from scheduling tasks on this cpu.
+  UleRunq tdq_realtime;/* (t) real-time run queue. */
+  UleRunq tdq_timeshare;/* (t) timeshare run queue. */
+  UleRunq tdq_idle;/* (t) Queue of IDLE threads. */
+
+	int		tdq_load;	/* (ts) Aggregate load. */
+	int		tdq_sysload;	/* (ts) For loadavg, !ITHD load. */
+	int		tdq_cpu_idle;	/* (ls) cpu_idle() is active. */
+	int		tdq_transferable; /* (ts) Transferable thread count. */
+	short		tdq_switchcnt;	/* (l) Switches this tick. */
+	short		tdq_oldswitchcnt; /* (l) Switches last tick. */
+	u_char		tdq_lowpri;	/* (ts) Lowest priority thread. */
+	u_char		tdq_owepreempt;	/* (f) Remote preemption pending. */
+	u_char		tdq_idx;	/* (t) Current insert index. */
+	u_char		tdq_ridx;	/* (t) Current removal index. */
+
+  // ID of the cpu.
+  int id = -1;
+  mutable absl::Mutex mu_;
+
+  // Protects this runqueue and the state of any task assoicated with the rq.
+  bool IsIdle() const { return current == nullptr; }
+  
+  //TODO: Enable if required
+  // bool LocklessRqEmpty() const { return run_queue.LocklessSize() == 0; }
+
+    /* Operations on per processor queues */
+  UleTask* tdq_choose();
+  void tdq_setup(int);
+  void tdq_load_add(UleTask *);
+  void tdq_load_rem(UleTask *);
+  __inline void tdq_runq_add(UleTask *, int);
+  __inline void tdq_runq_rem(UleTask *);
+  inline int sched_shouldpreempt(int, int, int);
+  void tdq_print(int);
+  void runq_print(struct UleRunq *);
+  int tdq_add(UleTask*, int);
+
+  int tdq_move(struct CpuState *);
+  int tdq_idled();
+  void tdq_notify(struct tdq *, int);
+  UleTask *tdq_steal(int);
+  UleTask *runq_steal(UleRunq *, int);
+  int sched_pickcpu(UleTask*, int);
+  void sched_balance(void);
+  bool sched_balance_pair(struct CpuState *);
+  inline CpuState *sched_setcpu(UleTask *, int, int);
+  inline void thread_unblock_switch(UleTask *, struct mtx *);
+  
+  //Can be considered later if we enable CPU topology
+  // int sysctl_kern_sched_topology_spec(SYSCTL_HANDLER_ARGS);
+  // int sysctl_kern_sched_topology_spec_internal(struct sbuf *sb, 
+  // struct cpu_group *cg, int indent);
+
+};
+
 
 
 
@@ -153,7 +312,7 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   void EnclaveReady() final;
   Channel& GetDefaultChannel() final { return *default_channel_; };
   Channel& GetAgentChannel(const Cpu& cpu) final {
-    Channel* channel; // TODO: Fix this
+    Channel* channel = cpu_state(cpu)->channel.get();
     CHECK_NE(channel, nullptr);
     return *channel;
   }
@@ -268,7 +427,7 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
 
   void PingCpu(const Cpu& cpu);
 
-  // CpuState* cpu_state(const Cpu& cpu) { return &cpu_states_[cpu.id()]; }
+  CpuState* cpu_state(const Cpu& cpu) { return &cpu_states_[cpu.id()]; }
 
   // CpuState* cpu_state_of(const UleTask* task) {
   //   CHECK_GE(task->cpu, 0);
@@ -291,10 +450,8 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
     return my_cpu;
   }
 
+  CpuState cpu_states_[MAX_CPUS];
   Channel* default_channel_ = nullptr;
-
-  absl::Duration min_granularity_;
-  absl::Duration latency_;
 
   bool idle_load_balancing_;
 };
@@ -367,166 +524,6 @@ class FullUleAgent : public FullAgent<EnclaveType> {
   std::unique_ptr<UleScheduler> scheduler_;
 };
 
-class CpuState {
-  #define PRIO_MIN        -20
-#define PRIO_MAX        20
-
-private:
-
-/* flags kept in ts_flags */
-#define	TSF_BOUND	0x0001		/* Thread can not migrate. */
-#define	TSF_XFERABLE	0x0002		/* Thread was added as transferable. */
-
-  /* Lockless accessors. */
-  #define	TDQ_LOAD(tdq)		atomic_load_int(&(tdq)->tdq_load)
-  #define	TDQ_TRANSFERABLE(tdq)	atomic_load_int(&(tdq)->tdq_transferable)
-  #define	TDQ_SWITCHCNT(tdq)	(atomic_load_short(&(tdq)->tdq_switchcnt) + \
-          atomic_load_short(&(tdq)->tdq_oldswitchcnt))
-  #define	TDQ_SWITCHCNT_INC(tdq)	(atomic_store_short(&(tdq)->tdq_switchcnt, \
-          atomic_load_short(&(tdq)->tdq_switchcnt) + 1))
-
-  #define	TDQ_SELF()	((struct CpuState *)PCPU_GET(sched))
-  #define	TDQ_CPU(x)	(DPCPU_ID_PTR((x), tdq))
-  #define	TDQ_ID(x)	((x)->tdq_id)
-
-  static CpuState	tdq_cpu;
-
-
-  #define	TDQ_LOCK_ASSERT(t, type)	mtx_assert(TDQ_LOCKPTR((t)), (type))
-  #define	TDQ_LOCK(t)		mtx_lock_spin(TDQ_LOCKPTR((t)))
-  #define	TDQ_LOCK_FLAGS(t, f)	mtx_lock_spin_flags(TDQ_LOCKPTR((t)), (f))
-  #define	TDQ_TRYLOCK(t)		mtx_trylock_spin(TDQ_LOCKPTR((t)))
-  #define	TDQ_TRYLOCK_FLAGS(t, f)	mtx_trylock_spin_flags(TDQ_LOCKPTR((t)), (f))
-  #define	TDQ_UNLOCK(t)		mtx_unlock_spin(TDQ_LOCKPTR((t)))
-#define	TDQ_LOCKPTR(t)		((struct mtx *)(&(t)->tdq_lock))
-
-#define	TD_SET_STATE(td, state)	(td)->td_state = state
-
-
-#define	PRI_MIN_TIMESHARE	(88)
-#define	PRI_MAX_TIMESHARE	(PRI_MIN_IDLE - 1)
-
-#define	PUSER			(PRI_MIN_TIMESHARE)
-
-#define	PRI_MIN_IDLE		(224)
-#define	PRI_MAX_IDLE		(PRI_MAX)
-
-/*
- * These macros determine priorities for non-interactive threads.  They are
- * assigned a priority based on their recent cpu utilization as expressed
- * by the ratio of ticks to the tick total.  NHALF priorities at the start
- * and end of the MIN to MAX timeshare range are only reachable with negative
- * or positive nice respectively.
- *
- * PRI_RANGE:	Priority range for utilization dependent priorities.
- * PRI_NRESV:	Number of nice values.
- * PRI_TICKS:	Compute a priority in PRI_RANGE from the ticks count and total.
- * PRI_NICE:	Determines the part of the priority inherited from nice.
- */
-#define	SCHED_PRI_NRESV		(PRIO_MAX - PRIO_MIN)
-#define	SCHED_PRI_NHALF		(SCHED_PRI_NRESV / 2)
-#define	SCHED_PRI_MIN		(PRI_MIN_BATCH + SCHED_PRI_NHALF)
-#define	SCHED_PRI_MAX		(PRI_MAX_BATCH - SCHED_PRI_NHALF)
-#define	SCHED_PRI_RANGE		(SCHED_PRI_MAX - SCHED_PRI_MIN + 1)
-#define	SCHED_PRI_TICKS(ts)						\
-    (SCHED_TICK_HZ((ts)) /						\
-    (roundup(SCHED_TICK_TOTAL((ts)), SCHED_PRI_RANGE) / SCHED_PRI_RANGE))
-#define	SCHED_PRI_NICE(nice)	(nice)
-
-/*
- * Priority ranges used for interactive and non-interactive timeshare
- * threads.  The timeshare priorities are split up into four ranges.
- * The first range handles interactive threads.  The last three ranges
- * (NHALF, x, and NHALF) handle non-interactive threads with the outer
- * ranges supporting nice values.
- */
-#define	PRI_TIMESHARE_RANGE	(PRI_MAX_TIMESHARE - PRI_MIN_TIMESHARE + 1)
-#define	PRI_INTERACT_RANGE	((PRI_TIMESHARE_RANGE - SCHED_PRI_NRESV) / 2)
-#define	PRI_BATCH_RANGE		(PRI_TIMESHARE_RANGE - PRI_INTERACT_RANGE)
-
-#define	PRI_MIN_INTERACT	PRI_MIN_TIMESHARE
-#define	PRI_MAX_INTERACT	(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE - 1)
-#define	PRI_MIN_BATCH		(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE)
-#define	PRI_MAX_BATCH		PRI_MAX_TIMESHARE
-
-/* sched_add arguments (formerly setrunqueue) */
-// #define	SRQ_BORING	0x0000		/* No special circumstances. */
-// #define	SRQ_YIELDING	0x0001		/* We are yielding (from mi_switch). */
-// #define	SRQ_OURSELF	0x0002		/* It is ourself (from mi_switch). */
-// #define	SRQ_INTR	0x0004		/* It is probably urgent. */
-// #define	SRQ_HOLD	0x0020		/* Return holding original td lock */
-// #define	SRQ_HOLDTD	0x0040		/* Return holding td lock */
-
-static constexpr uint16_t SRQ_PREEMPTED = static_cast<uint16_t>(0x0008);		/* has been preempted.. be kind */
-static constexpr uint16_t SRQ_BORROWING = static_cast<uint16_t>(0x0010); /* Priority updated due to prio_lend */	
-
-
-  // current points to the CfsTask that we most recently picked to run on the
-  // cpu. Note, we say most recently picked as a txn could fail leaving us with
-  // current pointing to a task that is not currently on cpu.
-  UleTask* current = nullptr;
-
-
-  // // pointer to the kernel ipc queue.
-  // std::unique_ptr<Channel> channel = nullptr;
-
-  
-  // the run queue responsible from scheduling tasks on this cpu.
-  UleRunq tdq_realtime;/* (t) real-time run queue. */
-  UleRunq tdq_timeshare;/* (t) timeshare run queue. */
-  UleRunq tdq_idle;/* (t) Queue of IDLE threads. */
-
-	int		tdq_load;	/* (ts) Aggregate load. */
-	int		tdq_sysload;	/* (ts) For loadavg, !ITHD load. */
-	int		tdq_cpu_idle;	/* (ls) cpu_idle() is active. */
-	int		tdq_transferable; /* (ts) Transferable thread count. */
-	short		tdq_switchcnt;	/* (l) Switches this tick. */
-	short		tdq_oldswitchcnt; /* (l) Switches last tick. */
-	u_char		tdq_lowpri;	/* (ts) Lowest priority thread. */
-	u_char		tdq_owepreempt;	/* (f) Remote preemption pending. */
-	u_char		tdq_idx;	/* (t) Current insert index. */
-	u_char		tdq_ridx;	/* (t) Current removal index. */
-
-  // ID of the cpu.
-  int id = -1;
-  mutable absl::Mutex mu_;
-
-  protected:
-  // Protects this runqueue and the state of any task assoicated with the rq.
-  bool IsIdle() const { return current == nullptr; }
-  
-  //TODO: Enable if required
-  // bool LocklessRqEmpty() const { return run_queue.LocklessSize() == 0; }
-
-    /* Operations on per processor queues */
-  UleTask* tdq_choose();
-  void tdq_setup(int);
-  void tdq_load_add(UleTask *);
-  void tdq_load_rem(UleTask *);
-  __inline void tdq_runq_add(UleTask *, int);
-  __inline void tdq_runq_rem(UleTask *);
-  inline int sched_shouldpreempt(int, int, int);
-  void tdq_print(int);
-  void runq_print(struct UleRunq *);
-  int tdq_add(UleTask*, int);
-
-  int tdq_move(struct CpuState *);
-  int tdq_idled();
-  void tdq_notify(struct tdq *, int);
-  UleTask *tdq_steal(int);
-  UleTask *runq_steal(UleRunq *, int);
-  int sched_pickcpu(UleTask*, int);
-  void sched_balance(void);
-  bool sched_balance_pair(struct CpuState *);
-  inline CpuState *sched_setcpu(UleTask *, int, int);
-  inline void thread_unblock_switch(UleTask *, struct mtx *);
-  
-  //Can be considered later if we enable CPU topology
-  // int sysctl_kern_sched_topology_spec(SYSCTL_HANDLER_ARGS);
-  // int sysctl_kern_sched_topology_spec_internal(struct sbuf *sb, 
-  // struct cpu_group *cg, int indent);
-
-};
 
 
 

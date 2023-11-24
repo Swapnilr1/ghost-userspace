@@ -42,6 +42,9 @@ ABSL_FLAG(bool, experimental_enable_idle_load_balancing, true,
 
 namespace ghost {
 
+UleRunq::UleRunq() {
+
+}
 
 int UleRunq::runq_check() {
   return rq_status != 0;
@@ -146,11 +149,27 @@ UleScheduler::UleScheduler(Enclave* enclave, CpuList cpulist,
                            absl::Duration min_granularity,
                            absl::Duration latency)
     : BasicDispatchScheduler(enclave, std::move(cpulist), std::move(allocator)),
-      min_granularity_(min_granularity),
-      latency_(latency),
       idle_load_balancing_(
           absl::GetFlag(FLAGS_experimental_enable_idle_load_balancing)) {
-  
+	for (const Cpu& cpu : cpus()) {
+    CpuState* cs = cpu_state(cpu);
+    cs->id = cpu.id();
+
+    {
+      //absl::MutexLock l(&cs->run_queue .mu_);
+    //   cs->run_queue.SetMinGranularity(min_granularity_);
+    //   cs->run_queue.SetLatency(latency_);
+    }
+
+    cs->channel = enclave->MakeChannel(GHOST_MAX_QUEUE_ELEMS, cpu.numa_node(),
+                                       MachineTopology()->ToCpuList({cpu}));
+    // This channel pointer is valid for the lifetime of CfsScheduler
+    if (!default_channel_) {
+      default_channel_ = cs->channel.get();
+    }
+  }
+
+
 }
 
 void UleScheduler::DumpAllTasks() {
@@ -370,7 +389,7 @@ __inline void CpuState::tdq_runq_add(UleTask *td, int flags)
 		return;
 	} else
 		td->ts_runq = &tdq_idle;
-	(td->ts_runq, td, flags);
+	td->ts_runq->runq_add(td, flags);
 }
 
 }  //  namespace ghost
