@@ -36,10 +36,10 @@ static constexpr int SRQ_HOLDTD =	0x0040;		/* Return holding td lock */
 class UleTask;
 
 class UleRunq {
-
+  
+public:
   static constexpr int RQ_NQS	=	64;		/* Number of run queues. */
   static constexpr int RQ_PPQ	=	4;		/* Priorities per queue. */
-public:
   explicit UleRunq();
   UleRunq(const UleRunq&) = delete;
   UleRunq& operator=(UleRunq&) = delete;
@@ -106,6 +106,14 @@ struct UleTask : public Task<> {
 	u_char		td_pri_class;	/* (t) Scheduling class. */
 	u_char		td_user_pri;	/* (t) User pri from estcpu and nice. */
 	u_char		td_base_user_pri; /* (t) Base user pri */
+  enum td_states {
+		TDS_INACTIVE = 0x0,
+		TDS_INHIBITED,
+		TDS_CAN_RUN,
+		TDS_RUNQ,
+		TDS_RUNNING
+	} td_state;			/* (t) thread state */
+  int		td_pinned;	/* (k) Temporary cpu pin count. */
   // Fields from struct thread>
 
   // <Fields from struct td_sched
@@ -151,7 +159,7 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   }
 
   bool Empty(const Cpu& cpu) {
-
+      return false;
   }
 
   //void DumpState(const Cpu& cpu, int flags) final;
@@ -359,12 +367,9 @@ class FullUleAgent : public FullAgent<EnclaveType> {
   std::unique_ptr<UleScheduler> scheduler_;
 };
 
-}  // namespace ghost
-
-#endif  // GHOST_SCHEDULERS_ULE_SCHEDULER_H_
-
-
 class CpuState {
+  #define PRIO_MIN        -20
+#define PRIO_MAX        20
 
 private:
 
@@ -383,13 +388,9 @@ private:
   #define	TDQ_SELF()	((struct CpuState *)PCPU_GET(sched))
   #define	TDQ_CPU(x)	(DPCPU_ID_PTR((x), tdq))
   #define	TDQ_ID(x)	((x)->tdq_id)
-  #else	/* !SMP */
-  static struct tdq	tdq_cpu;
 
-  #define	TDQ_ID(x)	(0)
-  #define	TDQ_SELF()	(&tdq_cpu)
-  #define	TDQ_CPU(x)	(&tdq_cpu)
-  #endif
+  static CpuState	tdq_cpu;
+
 
   #define	TDQ_LOCK_ASSERT(t, type)	mtx_assert(TDQ_LOCKPTR((t)), (type))
   #define	TDQ_LOCK(t)		mtx_lock_spin(TDQ_LOCKPTR((t)))
@@ -397,11 +398,9 @@ private:
   #define	TDQ_TRYLOCK(t)		mtx_trylock_spin(TDQ_LOCKPTR((t)))
   #define	TDQ_TRYLOCK_FLAGS(t, f)	mtx_trylock_spin_flags(TDQ_LOCKPTR((t)), (f))
   #define	TDQ_UNLOCK(t)		mtx_unlock_spin(TDQ_LOCKPTR((t)))
-#define	TDQ_LOCKPTR(t)		((struct mtx *)(&(t)->tdq_lock
+#define	TDQ_LOCKPTR(t)		((struct mtx *)(&(t)->tdq_lock))
 
 #define	TD_SET_STATE(td, state)	(td)->td_state = state
-#define	TD_SET_RUNNING(td)	TD_SET_STATE(td, TDS_RUNNING)
-#define	TD_SET_RUNQ(td)		TD_SET_STATE(td, TDS_RUNQ)
 
 
 #define	PRI_MIN_TIMESHARE	(88)
@@ -458,8 +457,8 @@ private:
 // #define	SRQ_HOLD	0x0020		/* Return holding original td lock */
 // #define	SRQ_HOLDTD	0x0040		/* Return holding td lock */
 
-constexpr uint16_t SRQ_PREEMPTED = static_cast<uint16_t>(0x0008);		/* has been preempted.. be kind */
-constexpr uint16_t SRQ_BORROWING = static_cast<uint16_t>(0x0010); /* Priority updated due to prio_lend */	
+static constexpr uint16_t SRQ_PREEMPTED = static_cast<uint16_t>(0x0008);		/* has been preempted.. be kind */
+static constexpr uint16_t SRQ_BORROWING = static_cast<uint16_t>(0x0010); /* Priority updated due to prio_lend */	
 
 
   // current points to the CfsTask that we most recently picked to run on the
@@ -468,8 +467,10 @@ constexpr uint16_t SRQ_BORROWING = static_cast<uint16_t>(0x0010); /* Priority up
   UleTask* current = nullptr;
 
 
-  // pointer to the kernel ipc queue.
-  std::unique_ptr<Channel> channel = nullptr;
+  // // pointer to the kernel ipc queue.
+  // std::unique_ptr<Channel> channel = nullptr;
+
+  
   // the run queue responsible from scheduling tasks on this cpu.
   UleRunq tdq_realtime;/* (t) real-time run queue. */
   UleRunq tdq_timeshare;/* (t) timeshare run queue. */
@@ -499,19 +500,19 @@ constexpr uint16_t SRQ_BORROWING = static_cast<uint16_t>(0x0010); /* Priority up
 
     /* Operations on per processor queues */
   UleTask* tdq_choose();
-  void tdq_setup(int i);
+  void tdq_setup(int);
   void tdq_load_add(UleTask *);
   void tdq_load_rem(UleTask *);
   __inline void tdq_runq_add(UleTask *, int);
   __inline void tdq_runq_rem(UleTask *);
   inline int sched_shouldpreempt(int, int, int);
-  void tdq_print(int cpu);
-  void runq_print(struct UleRunq *rq);
+  void tdq_print(int);
+  void runq_print(struct UleRunq *);
   int tdq_add(UleTask*, int);
 
   int tdq_move(struct CpuState *);
   int tdq_idled();
-  void tdq_notify(struct tdq *, int lowpri);
+  void tdq_notify(struct tdq *, int);
   UleTask *tdq_steal(int);
   UleTask *runq_steal(UleRunq *, int);
   int sched_pickcpu(UleTask*, int);
@@ -525,6 +526,11 @@ constexpr uint16_t SRQ_BORROWING = static_cast<uint16_t>(0x0010); /* Priority up
   // int sysctl_kern_sched_topology_spec_internal(struct sbuf *sb, 
   // struct cpu_group *cg, int indent);
 
-} ABSL_CACHELINE_ALIGNED;
+};
 
+
+
+}  // namespace ghost
+
+#endif  // GHOST_SCHEDULERS_ULE_SCHEDULER_H_
 
