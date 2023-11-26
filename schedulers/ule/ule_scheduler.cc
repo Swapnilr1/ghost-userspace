@@ -15,6 +15,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <algorithm>
 
 #include "absl/functional/any_invocable.h"
 #include "absl/numeric/int128.h"
@@ -132,7 +133,111 @@ void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
 	}
 }
 
+/*
+ * This is the core of the interactivity algorithm.  Determines a score based
+ * on past behavior.  It is the ratio of sleep time to run time scaled to
+ * a [0, 100] integer.  This is the voluntary sleep time of a process, which
+ * differs from the cpu usage because it does not account for time spent
+ * waiting on a run-queue.  Would be prettier if we had floating point.
+ *
+ * When a thread's sleep time is greater than its run time the
+ * calculation is:
+ *
+ *                           scaling factor
+ * interactivity score =  ---------------------
+ *                        sleep time / run time
+ *
+ *
+ * When a thread's run time is greater than its sleep time the
+ * calculation is:
+ *
+ *                                                 scaling factor
+ * interactivity score = 2 * scaling factor  -  ---------------------
+ *                                              run time / sleep time
+ */
+int UleTask::sched_interact_score()
+{
+	int div;
 
+	/*
+	 * The score is only needed if this is likely to be an interactive
+	 * task.  Don't go through the expense of computing it if there's
+	 * no chance.
+	 */
+	if (sched_interact <= SCHED_INTERACT_HALF &&
+		ts_runtime >= ts_slptime)
+			return (SCHED_INTERACT_HALF);
+
+	if (ts_runtime > ts_slptime) {
+		div = std::max(u_int(1), ts_runtime / SCHED_INTERACT_HALF);
+		return (SCHED_INTERACT_HALF +
+		    (SCHED_INTERACT_HALF - (ts_slptime / div)));
+	}
+	if (ts_slptime > ts_runtime) {
+		div = std::max(u_int(1), ts_slptime / SCHED_INTERACT_HALF);
+		return (ts_runtime / div);
+	}
+	/* runtime == slptime */
+	if (ts_runtime)
+		return (SCHED_INTERACT_HALF);
+
+	/*
+	 * This can happen if slptime and runtime are 0.
+	 */
+	return (0);
+}
+
+/*
+ * Scale the scheduling priority according to the "interactivity" of this
+ * process.
+ */
+void UleTask::sched_priority()
+{
+	u_int pri, score;
+
+	if (PRI_BASE(td_pri_class) != PRI_TIMESHARE)
+		return;
+	/*
+	 * If the score is interactive we place the thread in the realtime
+	 * queue with a priority that is less than kernel and interrupt
+	 * priorities.  These threads are not subject to nice restrictions.
+	 *
+	 * Scores greater than this are placed on the normal timeshare queue
+	 * where the priority is partially decided by the most recent cpu
+	 * utilization and the rest is decided by nice value.
+	 *
+	 * The nice value of the process has a linear effect on the calculated
+	 * score.  Negative nice values make it easier for a thread to be
+	 * considered interactive.
+	 */
+	score = std::max(0, this->sched_interact_score()+nice);
+	if (score < sched_interact) {
+		pri = CpuState::PRI_MIN_INTERACT;
+		pri += (CpuState::PRI_MAX_INTERACT - CpuState::PRI_MIN_INTERACT + 1) * score /
+		    sched_interact;
+		CHECK(pri >= CpuState::PRI_MIN_INTERACT && pri <= CpuState::PRI_MAX_INTERACT);
+	} else {
+		pri = CpuState::SCHED_PRI_MIN;
+		if (ts_ticks)
+			pri += std::min(CpuState::getSchedPriTicks(this),CpuState::SCHED_PRI_RANGE - 1);
+		// TODO: Add nice values and update this
+		pri += nice;
+		CHECK(pri >= CpuState::PRI_MIN_BATCH && pri <= CpuState::PRI_MAX_BATCH);
+	}
+	this->sched_user_prio(pri);
+	return;
+}
+
+/*
+ * Set the base user priority, does not effect current running priority.
+ */
+void UleTask::sched_user_prio(u_char prio)
+{
+	td_base_user_pri = prio;
+	if (td_lend_user_pri <= prio)
+		return;
+	td_user_pri = prio;
+}
 
 
 // void PrintDebugTaskMessage(std::string message_name, CpuState* cs,
@@ -244,12 +349,16 @@ void UleScheduler::StartMigrateCurrTask() {
 
 
 void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
-  const ghost_msg_payload_task_new* payload =
+  	const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
-  CpuState *tdq = &cpu_states_[MyCpu()];
-  tdq->tdq_add(task, 0);
-
+	task->ts_cpu=MyCpu();
+  	CpuState *tdq = &cpu_states_[task->ts_cpu];
+  	task->nice=payload->nice;
+	//TODO: Remove true when runnable already set
+	if(payload->runnable || true){
+		tdq->tdq_add(task, 0);
+	}
 }
 
 void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {

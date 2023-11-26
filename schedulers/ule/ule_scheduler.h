@@ -102,6 +102,9 @@ struct UleTask : public Task<> {
 	u_char		td_pri_class;	/* (t) Scheduling class. */
 	u_char		td_user_pri;	/* (t) User pri from estcpu and nice. */
 	u_char		td_base_user_pri; /* (t) Base user pri */
+  u_char		td_lend_user_pri; /* (t) Lend user pri. */
+  int nice;
+  
 
 // ADDED BY ABHISHEK
 	int		td_flags;	/* (t) TDF_* flags. */
@@ -116,6 +119,9 @@ struct UleTask : public Task<> {
 	} td_state;			/* (t) thread state */
   int		td_pinned;	/* (k) Temporary cpu pin count. */
   // Fields from struct thread>
+  static constexpr u_int sched_interact = 30;
+  static constexpr u_int	SCHED_INTERACT_MAX	= 100;
+  static constexpr u_int	SCHED_INTERACT_HALF	=  (SCHED_INTERACT_MAX / 2);
 
   // <Fields from struct td_sched
   // TODO: Decide which ones are relevant later
@@ -130,7 +136,30 @@ struct UleTask : public Task<> {
 	int		ts_ftick;	/* First tick that we were running on */
 	int		ts_ticks;	/* Tick count */
 
+  /*
+ * Priority classes.
+ */
+static constexpr int	PRI_ITHD = 1;	/* Interrupt thread. */
+static constexpr int	PRI_REALTIME	= 2;	/* Real time process. */
+static constexpr int	PRI_TIMESHARE	= 3;	/* Time sharing process. */
+static constexpr int PRI_IDLE	=4;	/* Idle process. */
+
+/*
+ * PRI_FIFO is POSIX.1B SCHED_FIFO.
+ */
+
+static constexpr int	PRI_FIFO_BIT	=	8;
+static constexpr int	PRI_FIFO	=(PRI_FIFO_BIT | PRI_REALTIME);
+
+#define	PRI_BASE(P)		((P) & ~PRI_FIFO_BIT)
+#define	PRI_IS_REALTIME(P)	(PRI_BASE(P) == PRI_REALTIME)
+#define	PRI_NEED_RR(P)		((P) != PRI_FIFO)
+
   // <Fields from struct td_sched > 
+ public: 
+ int sched_interact_score();
+ void sched_priority();
+ void sched_user_prio(u_char prio);
 };
 
 struct CpuState {
@@ -201,10 +230,13 @@ static constexpr int	PRI_MIN_INTERACT =	PRI_MIN_TIMESHARE;
 static constexpr int PRI_MAX_IDLE	= PRI_MAX;
 static constexpr int	PRI_BATCH_RANGE	= (PRI_TIMESHARE_RANGE - PRI_INTERACT_RANGE);
 static constexpr int	PUSER	= (PRI_MIN_TIMESHARE);
-#define	SCHED_PRI_TICKS(ts)						\
-    (SCHED_TICK_HZ((ts)) /						\
-    (roundup(SCHED_TICK_TOTAL((ts)), SCHED_PRI_RANGE) / SCHED_PRI_RANGE))
-#define	SCHED_PRI_NICE(nice)	(nice)
+static constexpr int	SCHED_TICK_SHIFT= 10;
+//TODO: find the hz value
+static constexpr int hz=10;
+#define	SCHED_TICK_HZ(ts)	((ts)->ts_ticks >> SCHED_TICK_SHIFT)
+#define	SCHED_TICK_TOTAL(ts)	(std::max((ts)->ts_ltick - (ts)->ts_ftick, hz))
+#define roundup(x, y)   ((((x) % (y)) == 0) ? \
+	                (x) : ((x) + ((y) - ((x) % (y)))))
 
 static constexpr int 	PRI_MIN_KERN = 48;
 static constexpr int preempt_thresh = PRI_MIN_KERN;
@@ -276,6 +308,10 @@ static constexpr int	TDF_NOLOAD=0x00040000; /* Ignore during load avg calculatio
   bool sched_balance_pair(struct CpuState *);
   inline CpuState *sched_setcpu(UleTask *, int, int);
   inline void thread_unblock_switch(UleTask *, struct mtx *);
+
+  static int getSchedPriTicks(UleTask* ts){						
+    return (SCHED_TICK_HZ((ts))/(roundup(SCHED_TICK_TOTAL((ts)), SCHED_PRI_RANGE) / SCHED_PRI_RANGE));
+  }
   
   //Can be considered later if we enable CPU topology
   // int sysctl_kern_sched_topology_spec(SYSCTL_HANDLER_ARGS);
