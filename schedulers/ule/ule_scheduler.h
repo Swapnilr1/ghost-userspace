@@ -70,7 +70,7 @@ public:
   }
   inline int runq_findbit() {
     if (rq_status != 0) {
-      return __builtin_clzl(rq_status);
+      return __builtin_ctzl(rq_status);
     }
     return -1;
   }
@@ -79,7 +79,7 @@ public:
     mask = rq_status & mask;
     if (mask == 0)
 			return -1;
-		return __builtin_clzl(mask);
+		return __builtin_ctzl(mask);
   }
 
   

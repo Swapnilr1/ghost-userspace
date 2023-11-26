@@ -44,7 +44,8 @@ ABSL_FLAG(bool, experimental_enable_idle_load_balancing, true,
 namespace ghost {
 
 UleRunq::UleRunq() {
-
+  rq_status = 0;
+  CHECK(runq_[0].empty());
 }
 
 bool UleRunq::runq_check() {
@@ -352,16 +353,34 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
   	const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
-	task->ts_cpu=MyCpu();
-  	CpuState *tdq = &cpu_states_[task->ts_cpu];
-  	task->nice=payload->nice;
-	//TODO: Remove true when runnable already set
-	if(payload->runnable || true){
+
+  GHOST_DPRINT(3, stderr, "TaskNew: task = %p", task);
+	task->ts_cpu = MyCpu();
+  CpuState *tdq = &cpu_states_[task->ts_cpu];
+  task->nice=payload->nice;
+  task->seqnum = msg.seqnum();
+	if (payload->runnable) {
+    GHOST_DPRINT(3, stderr, "TaskNew: task %p is runnable", task);
+    task->td_state = UleTask::TDS_CAN_RUN;
 		tdq->tdq_add(task, 0);
 	}
 }
 
 void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
+  const ghost_msg_payload_task_new* payload =
+      static_cast<const ghost_msg_payload_task_new*>(msg.payload());
+
+  // TODO: Adjust time slices stats
+
+  GHOST_DPRINT(3, stderr, "TaskRunnable: task = %p", task);
+	task->ts_cpu = MyCpu();
+  CpuState *tdq = &cpu_states_[task->ts_cpu];
+  task->nice=payload->nice;
+	if (payload->runnable) {
+    GHOST_DPRINT(3, stderr, "TaskRunnable: task %p is runnable", task);
+    task->td_state = UleTask::TDS_CAN_RUN;
+		tdq->tdq_add(task, 0);
+	}
 }
 
 // Disable thread safety analysis as this function is called with rq lock held
@@ -391,6 +410,7 @@ void UleScheduler::TaskPreempted(UleTask* task, const Message& msg) {
   
 }
 
+// NOT required
 void UleScheduler::TaskSwitchto(UleTask* task, const Message& msg) {
  
 }
@@ -441,6 +461,7 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
   CpuState* cs = cpu_state(cpu);
 
   UleTask* prev = cs->tdq_curthread;
+  GHOST_DPRINT(3, stderr, "UleSchedule: prev = %p", prev);
 
   if (prio_boost) {
     // If we are currently running a task, we need to put it back onto the
@@ -490,6 +511,8 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
 
   cs->tdq_lock.Lock();
   UleTask* next = sched_choose(cs);
+  GHOST_DPRINT(3, stderr, "UleSchedule: next = %p", next);
+
   cs->tdq_lock.Unlock();
 
   // if (!next && idle_load_balancing_) {
@@ -859,7 +882,7 @@ int CpuState::tdq_add(UleTask *td, int flags)
 	// THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
 	CHECK((td->td_inhibitors == 0));
 	CHECK(td->td_state== UleTask::TDS_RUNNING || td->td_state == UleTask::TDS_CAN_RUN);
-	CHECK(td->td_flags & TDF_INMEM);
+	// CHECK(td->td_flags & TDF_INMEM); -- Removed because not relevant to ghOSt impl
 
 	lowpri = tdq_lowpri;
 	if (td->td_priority < lowpri)
