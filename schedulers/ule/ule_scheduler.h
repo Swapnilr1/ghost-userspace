@@ -409,7 +409,7 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   // freeing it if it is currently !cs->current, otherwise, it defers the
   // freeing to PickNextTask.
   // Note: Should be called with this CPU's rq mutex lock held.
-  void HandleTaskDone(UleTask* task, bool from_switchto);
+  void HandleTaskDone(UleTask* task);
 
   // Dequeues the task from its RQ and initiates its migration. Places the task
   // in the migration queue and does not immediately migrate the task.

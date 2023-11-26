@@ -241,14 +241,14 @@ void UleTask::sched_user_prio(u_char prio)
 }
 
 
-// void PrintDebugTaskMessage(std::string message_name, CpuState* cs,
-//                            UleTask* task) {
-//   DPRINT_Ule(2, absl::StrFormat(
-//                     "[%s]: %s with state %s, %scurrent", message_name,
-//                     task->gtid.describe(),
-//                     absl::FormatStreamed(task->task_state),
-//                     (cs && cs->current == task) ? "" : "!"));
-// }
+void PrintDebugTaskMessage(std::string message_name, CpuState* cs,
+                           UleTask* task) {
+  DPRINT_Ule(2, absl::StrFormat(
+                    "[%s]: %s with state %s, %scurrent", message_name,
+                    task->gtid.describe(),
+                    task->td_state,
+                    (cs && cs->tdq_curthread == task) ? "" : "!"));
+}
 
 UleScheduler::UleScheduler(Enclave* enclave, CpuList cpulist,
                            std::shared_ptr<TaskAllocator<UleTask>> allocator,
@@ -394,19 +394,30 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 // Disable thread safety analysis as this function is called with rq lock held
 // but it's hard for the compiler to infer. Without this annotation, the
 // compiler raises safety analysis error.
-void UleScheduler::HandleTaskDone(UleTask* task, bool from_switchto) {
- 
+void UleScheduler::HandleTaskDone(UleTask* task) {
+  CpuState* tdq = &cpu_states_[task->ts_cpu];
+  tdq->tdq_lock.AssertHeld();
+  allocator()->FreeTask(task);
+  // Task will have been removed from queue anyway, nothing further TODO?
+
 }
 
 void UleScheduler::TaskDeparted(UleTask* task, const Message& msg) {
- 
+  const ghost_msg_payload_task_departed* payload =
+      static_cast<const ghost_msg_payload_task_departed*>(msg.payload());
+  CpuState *tdq = &cpu_states_[task->ts_cpu];
+  PrintDebugTaskMessage("TaskDeparted", tdq, task);
+  tdq->tdq_lock.AssertHeld();
+  CHECK(payload->from_switchto == false);
+  HandleTaskDone(task);
 }
 
 void UleScheduler::TaskDead(UleTask* task, const Message& msg) {
-  CpuState* cs = &cpu_states_[task->ts_cpu];
-  cs->tdq_lock.AssertHeld();
+  CpuState *tdq = &cpu_states_[task->ts_cpu];
+  PrintDebugTaskMessage("TaskDead", cs, task);
+  tdq->tdq_lock.AssertHeld();
 
-  HandleTaskDone(task, false);
+  HandleTaskDone(task);
 }
 
 void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
@@ -483,9 +494,9 @@ void UleScheduler::TaskPreempted(UleTask* task, const Message& msg) {
 
 }
 
-// NOT required
+// Should never be called
 void UleScheduler::TaskSwitchto(UleTask* task, const Message& msg) {
- 
+  CHECK(false);
 }
 
 // Disable thread safety analysis as this function is called with rq lock held
