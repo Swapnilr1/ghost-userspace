@@ -60,10 +60,6 @@ public:
 
   int runq_check(); // Basically isEmpty - but uses rq_status
 
-  // TODO: Add all methods required by RunQ
-
-  // Protects this runqueue and the state of any task assoicated with the rq.
-  mutable absl::Mutex mu_;
 
  private:
   inline void runq_setbit(int pri) {
@@ -113,7 +109,7 @@ struct UleTask : public Task<> {
 
   enum td_states {
 		TDS_INACTIVE = 0x0,
-		TDS_INHIBITED,
+		TDS_INHIBITED, // Cannot run, reason could be any of TDI_ flags
 		TDS_CAN_RUN,
 		TDS_RUNQ,
 		TDS_RUNNING
@@ -196,7 +192,6 @@ static constexpr int	PRI_TIMESHARE_RANGE= (PRI_MAX_TIMESHARE - PRI_MIN_TIMESHARE
 static constexpr int	PRI_INTERACT_RANGE =	((PRI_TIMESHARE_RANGE - SCHED_PRI_NRESV) / 2);
 static constexpr int	PRI_MAX_INTERACT =	(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE - 1);
 static constexpr int	PRI_MIN_BATCH =		(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE);
-
 
 static constexpr int SCHED_PRI_NHALF =	(SCHED_PRI_NRESV / 2);
 static constexpr int SCHED_PRI_MIN = PRI_MIN_BATCH + SCHED_PRI_NHALF;
@@ -349,6 +344,9 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   void CpuTick(const Message& msg) final;
 
  private:
+
+  UleTask* sched_choose(CpuState *tdq);
+
   // Empties the channel associated with cpu and dispatches the messages.
   void DrainChannel(const Cpu& cpu);
 

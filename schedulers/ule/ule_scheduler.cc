@@ -122,7 +122,7 @@ void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
 	pri = td->td_rqindex;
 	CHECK(pri < RQ_NQS); // ("runq_remove_idx: Invalid index %d\n", pri));
 	rqh = &runq_[pri];
-  runq_[pri].erase(td->td_runq);
+  	runq_[pri].erase(td->td_runq);
 	
 	if (rqh->empty()) {
 		//CTR0(KTR_RUNQ, "runq_remove_idx: empty");
@@ -179,7 +179,23 @@ void UleScheduler::DumpAllTasks() {
 
 
 void UleScheduler::EnclaveReady() {
-  
+  for (const Cpu& cpu : cpus()) {
+    CpuState* cs = cpu_state(cpu);
+    Agent* agent = enclave()->GetAgent(cpu);
+
+    // AssociateTask may fail if agent barrier is stale.
+    while (!cs->channel->AssociateTask(agent->gtid(), agent->barrier(),
+                                       /*status=*/nullptr)) {
+      CHECK_EQ(errno, ESTALE);
+    }
+  }
+
+  // Enable tick msg delivery here instead of setting AgentConfig.tick_config_
+  // because the agent subscribing the default channel (mostly the
+  // channel/agent for the front CPU in the enclave) can get CpuTick messages
+  // for another CPU in the enclave while this function is trying to associate
+  // each agent to its corresponding channel.
+  enclave()->SetDeliverTicks(true);
 }
 
 // The in kernel SelectTaskRq attempts to do the following:
@@ -231,7 +247,9 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
   const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
-  std::cout << "New Task arrived: " << task->gtid.describe() << "\n";
+  CpuState *tdq = &cpu_states_[MyCpu()];
+  tdq->tdq_add(task, 0);
+
 }
 
 void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
@@ -282,6 +300,22 @@ void UleScheduler::CpuTick(const Message& msg) {
 
 }
 
+UleTask* UleScheduler::sched_choose(CpuState *tdq) {
+  // Add logic to keep executing current task 
+
+  UleTask *td = tdq->tdq_choose();
+	if (td != NULL) {
+		tdq->tdq_runq_rem(td);
+		tdq->tdq_lowpri = td->td_priority;
+	} else { 
+		tdq->tdq_lowpri = CpuState::PRI_MAX_IDLE;
+		td = nullptr;
+	}
+	tdq->tdq_curthread = td;
+	return (td);
+}
+
+
 //-----------------------------------------------------------------------------
 // Load Balance
 //-----------------------------------------------------------------------------
@@ -294,11 +328,146 @@ void UleScheduler::CpuTick(const Message& msg) {
 
 void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
                                bool prio_boost) {
+  RunRequest* req = enclave()->GetRunRequest(cpu);
+  CpuState* cs = cpu_state(cpu);
 
+  UleTask* prev = cs->tdq_curthread;
+
+  if (prio_boost) {
+    // If we are currently running a task, we need to put it back onto the
+    // queue.
+    if (prev) {
+      absl::MutexLock l(&cs->tdq_lock);
+      switch (prev->td_state) {
+        // case CfsTaskState::State::kNumStates:
+        //   CHECK(false);
+        //   break;
+        case UleTask::TDS_INHIBITED:
+          break;
+        // case CfsTaskState::State::kDone:
+        //   cs->run_queue.DequeueTask(prev);
+        //   allocator()->FreeTask(prev);
+        //   break;
+        case UleTask::TDS_CAN_RUN:
+          // This case exclusively handles a task yield:
+          // - TaskYield: task->state goes from kRunning -> kRunnable
+          // - PickNextTask: we need to put the task back in the rq.
+          cs->tdq_runq_add(prev, 0);
+          break;
+        case UleTask::TDS_RUNNING:
+          cs->tdq_runq_add(prev, 0);
+          prev->td_state = UleTask::TDS_CAN_RUN;
+          break;
+      }
+
+      //cs->preempt_curr = false;
+      cs->tdq_curthread = nullptr;
+      // cs->run_queue.UpdateMinVruntime(cs); 
+    }
+    // If we are prio_boost'ed, then we are temporarily running at a higher
+    // priority than (kernel) CFS. The purpose of this is so that we can
+    // reconcile our state with the fact that any task we wanted to be running
+    // on the CPU will no longer be running. In our case, since we only sync
+    // up our CpuState in PickNextTask, we can simply RTLA yield. This works
+    // because:
+    // - We get prio_boosted
+    // - We rtla yield
+    // - eventually the cpu goes idle
+    // - we go directly back into the scheduling loop (without consuming any
+    // new messages as none will be generated).
+    req->LocalYield(agent_barrier, RTLA_ON_IDLE);
+    return;
+  }
+
+  cs->tdq_lock.Lock();
+  UleTask* next = sched_choose(cs);
+  cs->tdq_lock.Unlock();
+
+  // if (!next && idle_load_balancing_) {
+  //   next = NewIdleBalance(cs);
+  // }
+
+  cs->tdq_curthread = next;
+
+  if (next) {
+    DPRINT_Ule(3, absl::StrFormat("[%s]: Picked via PickNextTask",
+                                  next->gtid.describe()));
+
+    req->Open({
+        .target = next->gtid,
+        .target_barrier = next->seqnum,
+        .agent_barrier = agent_barrier,
+        .commit_flags = COMMIT_AT_TXN_COMMIT,
+    });
+
+    // Although unlikely it's possible for an oncpu task to enter ghOSt on
+    // any cpu. In this case there is a race window between producing the
+    // MSG_TASK_NEW and getting off that cpu (a race that is exacerbated
+    // by CFS dropping the rq->lock in PNT). During this window an agent
+    // can observe the MSG_TASK_NEW on the default queue and because the
+    // task is runnable it becomes a candidate to be put oncpu immediately.
+    //
+    // In this case we wait for `next` to fully get offcpu before trying
+    // to Commit().
+    while (next->status_word.on_cpu()) {
+      Pause();
+    }
+
+    uint64_t before_runtime = next->status_word.runtime();
+    if (req->Commit()) {
+      GHOST_DPRINT(3, stderr, "Task %s oncpu %d", next->gtid.describe(),
+                   cpu.id());
+      // Update task's vruntime, which is the physical runtime multiplied by
+      // the inverse of the weight for the task's nice value. We additionally
+      // divide the product by 2^22 (right shift by 22 bits) to make a nice
+      // value 0's vruntime equal to the wall runtime. This is because the
+      // pre-computed weight values are scaled up by 2^10 (the load weight for
+      // nice value = 0 becomes 1024). The weight values then get inverted
+      // (which turns scale-up to scale-down) and scaled up by 2^32 to
+      // pre-compute their inverse weights, leaving us the final scale up of
+      // 2^22.
+      //
+      // i.e., vruntime = wall_runtime / (precomputed_weight / 2^10)
+      //         = wall_runtime * 2^10 / precomputed_weight
+      //         = wall_runtime * 2^10 / (2^32 / precomputed_inverse_weight)
+      //         = wall_runtime * precomputed_inverse_weight / 2^22
+
+      // TODO: Update this
+      // uint64_t runtime = next->status_word.runtime() - before_runtime;
+      // next->vruntime += absl::Nanoseconds(static_cast<uint64_t>(
+      //     static_cast<absl::uint128>(next->inverse_weight) * runtime >> 22));
+    } else {
+      GHOST_DPRINT(3, stderr, "CfsSchedule: commit failed (state=%d)",
+                   req->state());
+      // If our transaction failed, it is because our agent was stale.
+      // Processing the remaining messages will bring our view up to date.
+      // Since only the last state of cs->current matters, it is okay to keep
+      // cs->current as what was picked by PickNextTask.
+    }
+  } else {
+    req->LocalYield(agent_barrier, 0);
+  }
 }
 
-void UleScheduler::Schedule(const Cpu& cpu, const StatusWord& agent_sw) {
 
+
+void UleScheduler::Schedule(const Cpu& cpu, const StatusWord& agent_sw) {
+  BarrierToken agent_barrier = agent_sw.barrier();
+  CpuState* cs = cpu_state(cpu);
+
+  GHOST_DPRINT(3, stderr, "Schedule: agent_barrier[%d] = %d\n", cpu.id(),
+               agent_barrier);
+
+  Message msg;
+  {
+    absl::MutexLock l(&cs->tdq_lock);
+    while (!(msg = Peek(cs->channel.get())).empty()) {
+      DispatchMessage(msg);
+      Consume(cs->channel.get(), msg);
+    }
+  }
+//   MigrateTasks(cs);
+  UleSchedule(cpu, agent_barrier, agent_sw.boosted_priority());
 }
 
 void UleScheduler::PingCpu(const Cpu& cpu) {
@@ -335,8 +504,21 @@ void UleAgent::AgentThread() {
   }
   SignalReady();
   WaitForEnclaveReady();
-  while (!Finished()) {
-    
+
+  PeriodicEdge debug_out(absl::Seconds(1));
+
+  while (!Finished() || !scheduler_->Empty(cpu())) {
+    scheduler_->Schedule(cpu(), status_word());
+
+    if (verbose() && debug_out.Edge()) {
+      static const int flags = verbose() > 1 ? Scheduler::kDumpStateEmptyRQ : 0;
+      if (scheduler_->debug_runqueue_) {
+        scheduler_->debug_runqueue_ = false;
+        scheduler_->DumpState(cpu(), Scheduler::kDumpAllTasks);
+      } else {
+        scheduler_->DumpState(cpu(), flags);
+      }
+    }
   }
   
 }
@@ -555,7 +737,7 @@ void CpuState::tdq_setlowpri(UleTask *ctd)
  * thread to it.  This is the internal function called when the tdq is
  * predetermined.
  */
-int CpuState::tdq_add( UleTask *td, int flags)
+int CpuState::tdq_add(UleTask *td, int flags)
 {
 	int lowpri;
 
