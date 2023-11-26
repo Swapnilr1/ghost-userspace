@@ -96,7 +96,7 @@ struct UleTask : public Task<> {
 
   // <Fields from struct thread - may need more of them later
   std::list<UleTask*>::iterator td_runq;
-  u_char		td_rqindex;	/* (t) Run queue index. */
+  int		td_rqindex;	/* (t) Run queue index. */
   u_char		td_base_pri;	/* (t) Thread base kernel priority. */
 	u_char		td_priority;	/* (t) Thread active priority. */
 	u_char		td_pri_class;	/* (t) Scheduling class. */
@@ -113,7 +113,8 @@ struct UleTask : public Task<> {
 		TDS_INHIBITED, // Cannot run, reason could be any of TDI_ flags
 		TDS_CAN_RUN,
 		TDS_RUNQ,
-		TDS_RUNNING
+		TDS_RUNNING,
+    TDS_FINISHED
 	} td_state;			/* (t) thread state */
   int		td_pinned;	/* (k) Temporary cpu pin count. */
 

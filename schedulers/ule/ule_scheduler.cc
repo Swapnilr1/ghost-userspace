@@ -125,7 +125,7 @@ void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
 	CHECK(pri < RQ_NQS); // ("runq_remove_idx: Invalid index %d\n", pri));
 	rqh = &runq_[pri];
   	runq_[pri].erase(td->td_runq);
-	
+	td->td_rqindex = -1; // A way to denote invalid iterator
 	if (rqh->empty()) {
 		//CTR0(KTR_RUNQ, "runq_remove_idx: empty");
 		runq_clrbit(pri);
@@ -407,10 +407,17 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 // but it's hard for the compiler to infer. Without this annotation, the
 // compiler raises safety analysis error.
 void UleScheduler::HandleTaskDone(UleTask* task) {
-  CpuState* tdq = &cpu_states_[task->ts_cpu];
-  tdq->tdq_lock.AssertHeld();
-  allocator()->FreeTask(task);
-  // Task will have been removed from queue anyway, nothing further TODO?
+  CpuState* cs = &cpu_states_[task->ts_cpu];
+  cs->tdq_lock.AssertHeld();
+
+  if (cs->tdq_curthread != task) {
+	if (task->td_rqindex != -1) {
+		cs->tdq_runq_rem(task);
+	}
+  	allocator()->FreeTask(task);
+  } else {
+	task->td_state = UleTask::TDS_FINISHED;
+  }
 
 }
 
@@ -472,8 +479,6 @@ void UleScheduler::TaskBlocked(UleTask* task, const Message& msg) {
 		CHECK_EQ(cs->tdq_curthread, task);
 	}
 
-	// Updates the task state accordingly. This is safe because this task should
-	// be associated with this CPU's agent and protected by this CPU's RQ lock.
 	if (cs->tdq_curthread == task) {
 		cs->tdq_curthread = nullptr;
 	}
@@ -542,8 +547,6 @@ void UleScheduler::CpuTick(const Message& msg) {
 }
 
 UleTask* UleScheduler::sched_choose(CpuState *tdq) {
-  // Add logic to keep executing current task 
-
   UleTask *td = tdq->tdq_choose();
 	if (td != NULL) {
 		tdq->tdq_runq_rem(td);
@@ -622,19 +625,20 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
   }
 
   cs->tdq_lock.Lock();
+  if (prev && (prev->td_state == UleTask::TDS_RUNNING || prev->td_state == UleTask::TDS_CAN_RUN)) {
+	cs->tdq_add(prev, 0);
+  } 
   UleTask* next = sched_choose(cs);
   GHOST_DPRINT(3, stderr, "UleSchedule: next = %p", next);
 
+  if (next) {
+  	next->td_state = UleTask::TDS_RUNNING;
+  }
+  cs->tdq_curthread = next;
   cs->tdq_lock.Unlock();
 
-  // if (!next && idle_load_balancing_) {
-  //   next = NewIdleBalance(cs);
-  // }
-
-  cs->tdq_curthread = next;
-
   if (next) {
-    DPRINT_Ule(3, absl::StrFormat("[%s]: Picked via PickNextTask",
+    DPRINT_Ule(3, absl::StrFormat("[%s]: Picked via sched_choose",
                                   next->gtid.describe()));
 
     req->Open({
@@ -681,7 +685,7 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
       // next->vruntime += absl::Nanoseconds(static_cast<uint64_t>(
       //     static_cast<absl::uint128>(next->inverse_weight) * runtime >> 22));
     } else {
-      GHOST_DPRINT(3, stderr, "CfsSchedule: commit failed (state=%d)",
+      GHOST_DPRINT(3, stderr, "UleSchedule: commit failed (state=%d)",
                    req->state());
       // If our transaction failed, it is because our agent was stale.
       // Processing the remaining messages will bring our view up to date.
