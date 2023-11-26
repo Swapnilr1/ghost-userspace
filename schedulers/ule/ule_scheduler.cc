@@ -374,12 +374,20 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 
   GHOST_DPRINT(3, stderr, "TaskRunnable: task = %p", task);
 	task->ts_cpu = MyCpu();
-  CpuState *tdq = &cpu_states_[task->ts_cpu];
-  task->nice=payload->nice;
+	CpuState *cs = &cpu_states_[task->ts_cpu];
+  	cs->tdq_lock.AssertHeld();
+    // If this is our current task, then we will defer its proccessing until
+	// PickNextTask. Otherwise, use the normal wakeup logic.
+	if (task->ts_cpu >= 0) {
+		if (cs->tdq_curthread == task) {
+		cs->tdq_curthread = nullptr;
+		}
+	}
+
 	if (payload->runnable) {
     GHOST_DPRINT(3, stderr, "TaskRunnable: task %p is runnable", task);
     task->td_state = UleTask::TDS_CAN_RUN;
-		tdq->tdq_add(task, 0);
+		cs->tdq_add(task, 0);
 	}
 }
 
@@ -395,19 +403,84 @@ void UleScheduler::TaskDeparted(UleTask* task, const Message& msg) {
 }
 
 void UleScheduler::TaskDead(UleTask* task, const Message& msg) {
+  CpuState* cs = &cpu_states_[task->ts_cpu];
+  cs->tdq_lock.AssertHeld();
 
+  HandleTaskDone(task, false);
 }
 
 void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
+	const ghost_msg_payload_task_yield* payload =
+	static_cast<const ghost_msg_payload_task_yield*>(msg.payload());
+	Cpu cpu = topology()->cpu(MyCpu());
+	CpuState* cs = &cpu_states_[task->ts_cpu];
+	GHOST_DPRINT(3, stderr, "TaskYield: task %p", task);
+	cs->tdq_lock.AssertHeld();
 
+	// If this task is not from a switchto chain, it should be the current task on
+	// this CPU.
+	if (!payload->from_switchto) {
+		CHECK_EQ(cs->tdq_curthread, task);
+	}
+
+	// The task should be in kDequeued state because only a currently running
+	// task can yield.
+	//TODO: check if onRqDequeued is required?
+	// CHECK(task->task_state.OnRqDequeued());
+
+	// Updates the task state accordingly. This is safe because this task should
+	// be associated with this CPU's agent and protected by this CPU's RQ lock.
+	PutPrevTask(task);
+
+	// This task was the last task in a switchto chain on a remote CPU. We should
+	// ping the remote CPU to schedule a new task.
+	if (payload->cpu != cpu.id()) {
+		CHECK(payload->from_switchto);
+		PingCpu(topology()->cpu(payload->cpu));
+	}
 }
 
 void UleScheduler::TaskBlocked(UleTask* task, const Message& msg) {
-  
+    const ghost_msg_payload_task_blocked* payload =
+      static_cast<const ghost_msg_payload_task_blocked*>(msg.payload());
+	Cpu cpu = topology()->cpu(MyCpu());
+	CpuState* cs = cpu_state(cpu);
+	GHOST_DPRINT(3, stderr, "TaskBlocked: task %p", task);
+	cs->tdq_lock.AssertHeld();
+
+	// If this task is not from a switchto chain, it should be the current task on
+	// this CPU.
+	if (!payload->from_switchto) {
+		CHECK_EQ(cs->tdq_curthread, task);
+	}
+
+	// Updates the task state accordingly. This is safe because this task should
+	// be associated with this CPU's agent and protected by this CPU's RQ lock.
+	if (cs->tdq_curthread == task) {
+		cs->tdq_curthread = nullptr;
+	}
+
+	task->td_state= UleTask::TDS_INHIBITED;
 }
 
 void UleScheduler::TaskPreempted(UleTask* task, const Message& msg) {
+  const ghost_msg_payload_task_preempt* payload =
+      static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
   
+  CpuState* cs = &cpu_states_[task->ts_cpu];
+  GHOST_DPRINT(3, stderr, "TaskPreempted: task %p", task);
+  cs->tdq_lock.AssertHeld();
+
+  // If this task is not from a switchto chain, it should be the current task on
+  // this CPU.
+  if (!payload->from_switchto) {
+    CHECK_EQ(cs->tdq_curthread, task);
+  }
+
+  // Updates the task state accordingly. This is safe because this task should
+  // be associated with this CPU's agent and protected by this CPU's RQ lock.
+  PutPrevTask(task);
+
 }
 
 // NOT required
@@ -423,6 +496,22 @@ void UleScheduler::CheckPreemptTick(const Cpu& cpu) {
 }
 
 void UleScheduler::PutPrevTask(UleTask* task) {
+	CpuState* cs = &cpu_states_[MyCpu()];
+	cs->tdq_lock.AssertHeld();
+
+	CHECK_NE(task, nullptr);
+
+	// If this task is currently running, kick it off-cpu.
+	if (cs->tdq_curthread == task) {
+		cs->tdq_curthread = nullptr;
+	}
+
+	// We have a notable deviation from the upstream's behavior here. In upstream,
+	// put_prev_task does not update the state, while we update the state here.
+	task->td_state = UleTask::TDS_CAN_RUN;
+
+
+	cs->tdq_add(task,0);
 }
 
 void UleScheduler::CpuTick(const Message& msg) {
