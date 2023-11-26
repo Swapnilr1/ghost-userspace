@@ -105,8 +105,6 @@ struct UleTask : public Task<> {
   u_char		td_lend_user_pri; /* (t) Lend user pri. */
   int nice;
   
-
-// ADDED BY ABHISHEK
 	int		td_flags;	/* (t) TDF_* flags. */
 	int		td_inhibitors;	/* (t) Why can not run. */
 
@@ -118,11 +116,13 @@ struct UleTask : public Task<> {
 		TDS_RUNNING
 	} td_state;			/* (t) thread state */
   int		td_pinned;	/* (k) Temporary cpu pin count. */
+
   // Fields from struct thread>
-  static constexpr u_int sched_interact = 30;
+  static constexpr u_int SCHED_INTERACT_THRESH	= 30;
   static constexpr u_int	SCHED_INTERACT_MAX	= 100;
   static constexpr u_int	SCHED_INTERACT_HALF	=  (SCHED_INTERACT_MAX / 2);
-
+  static constexpr u_int sched_interact = SCHED_INTERACT_THRESH;
+  
   // <Fields from struct td_sched
   // TODO: Decide which ones are relevant later
   UleRunq	*ts_runq;	/* Run-queue we're queued on. */
@@ -137,29 +137,33 @@ struct UleTask : public Task<> {
 	int		ts_ticks;	/* Tick count */
 
   /*
- * Priority classes.
- */
-static constexpr int	PRI_ITHD = 1;	/* Interrupt thread. */
-static constexpr int	PRI_REALTIME	= 2;	/* Real time process. */
-static constexpr int	PRI_TIMESHARE	= 3;	/* Time sharing process. */
-static constexpr int PRI_IDLE	=4;	/* Idle process. */
+  * Priority classes.
+  */
+  static constexpr int	PRI_ITHD = 1;	/* Interrupt thread. */
+  static constexpr int	PRI_REALTIME	= 2;	/* Real time process. */
+  static constexpr int	PRI_TIMESHARE	= 3;	/* Time sharing process. */
+  static constexpr int PRI_IDLE	=4;	/* Idle process. */
 
-/*
- * PRI_FIFO is POSIX.1B SCHED_FIFO.
- */
+  /*
+  * PRI_FIFO is POSIX.1B SCHED_FIFO.
+  */
 
-static constexpr int	PRI_FIFO_BIT	=	8;
-static constexpr int	PRI_FIFO	=(PRI_FIFO_BIT | PRI_REALTIME);
+  static constexpr int	PRI_FIFO_BIT	=	8;
+  static constexpr int	PRI_FIFO	=(PRI_FIFO_BIT | PRI_REALTIME);
 
-#define	PRI_BASE(P)		((P) & ~PRI_FIFO_BIT)
-#define	PRI_IS_REALTIME(P)	(PRI_BASE(P) == PRI_REALTIME)
-#define	PRI_NEED_RR(P)		((P) != PRI_FIFO)
+  // #define	PRI_NEED_RR(P)		((P) != PRI_FIFO)
 
-  // <Fields from struct td_sched > 
- public: 
- int sched_interact_score();
- void sched_priority();
- void sched_user_prio(u_char prio);
+    // <Fields from struct td_sched > 
+  public: 
+  inline int basePriority(){
+    return ((td_pri_class) & ~PRI_FIFO_BIT);
+  }
+  inline bool isRealTime(){
+    return (this->basePriority() == PRI_REALTIME);
+  }
+  int sched_interact_score();
+  void sched_priority();
+  void sched_user_prio(u_char prio);
 };
 
 struct CpuState {
@@ -172,8 +176,6 @@ struct CpuState {
   static constexpr int TSF_XFERABLE=0x0002;		/* Thread was added as transferable. */
 
   /* Lockless accessors. */
-  #define	TDQ_LOAD(tdq)		atomic_load_int(&(tdq)->tdq_load)
-  #define	TDQ_TRANSFERABLE(tdq)	atomic_load_int(&(tdq)->tdq_transferable)
   #define	TDQ_SWITCHCNT(tdq)	(atomic_load_short(&(tdq)->tdq_switchcnt) + \
           atomic_load_short(&(tdq)->tdq_oldswitchcnt))
   #define	TDQ_SWITCHCNT_INC(tdq)	(atomic_store_short(&(tdq)->tdq_switchcnt, \
@@ -283,11 +285,9 @@ static constexpr int	TDF_NOLOAD=0x00040000; /* Ignore during load avg calculatio
   int tdq_id = -1;
   mutable absl::Mutex tdq_lock;
 
-  bool IsIdle() const { return tdq_curthread == nullptr; }
-
     /* Operations on per processor queues */
   UleTask* tdq_choose();
-  void tdq_setup(int); //TODO: initializing the mutex is pending
+  void tdq_setup(int);
   inline int tdq_slice();
   void tdq_load_add(UleTask *);
   void tdq_load_rem(UleTask *);
@@ -328,8 +328,6 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
 
   // TODO: Copy other macros from FreeBSD
   static constexpr int SCHED_INTERACT_THRESH = 30;
-
-
 
   explicit UleScheduler(Enclave* enclave, CpuList cpulist,
                         std::shared_ptr<TaskAllocator<UleTask>> allocator,
@@ -405,7 +403,7 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   // have been ack'ed otherwise the txn will fail.
   void UleSchedule(const Cpu& cpu, BarrierToken agent_barrier, bool prio_boost);
 
-  // HandleTaskDone is responsible for remvoing a task from the run queue and
+  // HandleTaskDone is responsible for removing a task from the run queue and
   // freeing it if it is currently !cs->current, otherwise, it defers the
   // freeing to PickNextTask.
   // Note: Should be called with this CPU's rq mutex lock held.

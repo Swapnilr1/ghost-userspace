@@ -196,7 +196,7 @@ void UleTask::sched_priority()
 {
 	u_int pri, score;
 
-	if (PRI_BASE(td_pri_class) != PRI_TIMESHARE)
+	if (this->basePriority() != PRI_TIMESHARE)
 		return;
 	/*
 	 * If the score is interactive we place the thread in the realtime
@@ -221,7 +221,6 @@ void UleTask::sched_priority()
 		pri = CpuState::SCHED_PRI_MIN;
 		if (ts_ticks)
 			pri += std::min(CpuState::getSchedPriTicks(this),CpuState::SCHED_PRI_RANGE - 1);
-		// TODO: Add nice values and update this
 		pri += nice;
 		CHECK(pri >= CpuState::PRI_MIN_BATCH && pri <= CpuState::PRI_MAX_BATCH);
 	}
@@ -356,13 +355,20 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 
   GHOST_DPRINT(3, stderr, "TaskNew: task = %p", task);
 	task->ts_cpu = MyCpu();
-  CpuState *tdq = &cpu_states_[task->ts_cpu];
-  task->nice=payload->nice;
-  task->seqnum = msg.seqnum();
+	CpuState *cs = &cpu_states_[task->ts_cpu];
+	task->nice=payload->nice;
+	task->sched_priority();
+	task->seqnum = msg.seqnum();
 	if (payload->runnable) {
-    GHOST_DPRINT(3, stderr, "TaskNew: task %p is runnable", task);
-    task->td_state = UleTask::TDS_CAN_RUN;
-		tdq->tdq_add(task, 0);
+		PrintDebugTaskMessage("TaskNew: ",cs, task);
+		task->td_state = UleTask::TDS_CAN_RUN;
+		/*
+		* Recalculate the priority before we select the target cpu or
+		* run-queue.
+		*/
+		if (task->basePriority() == UleTask::PRI_TIMESHARE)
+			task->sched_priority();
+		cs->tdq_add(task, 0);
 	}
 }
 
@@ -385,8 +391,14 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 	}
 
 	if (payload->runnable) {
-    GHOST_DPRINT(3, stderr, "TaskRunnable: task %p is runnable", task);
-    task->td_state = UleTask::TDS_CAN_RUN;
+		PrintDebugTaskMessage("TaskRunnable: ", cs, task);
+		task->td_state = UleTask::TDS_CAN_RUN;
+		/*
+		* Recalculate the priority before we select the target cpu or
+		* run-queue.
+		*/
+		if (task->basePriority() == UleTask::PRI_TIMESHARE)
+			task->sched_priority();
 		cs->tdq_add(task, 0);
 	}
 }
@@ -413,9 +425,9 @@ void UleScheduler::TaskDeparted(UleTask* task, const Message& msg) {
 }
 
 void UleScheduler::TaskDead(UleTask* task, const Message& msg) {
-  CpuState *tdq = &cpu_states_[task->ts_cpu];
+  CpuState *cs = &cpu_states_[task->ts_cpu];
   PrintDebugTaskMessage("TaskDead", cs, task);
-  tdq->tdq_lock.AssertHeld();
+  cs->tdq_lock.AssertHeld();
 
   HandleTaskDone(task);
 }
@@ -425,7 +437,7 @@ void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
 	static_cast<const ghost_msg_payload_task_yield*>(msg.payload());
 	Cpu cpu = topology()->cpu(MyCpu());
 	CpuState* cs = &cpu_states_[task->ts_cpu];
-	GHOST_DPRINT(3, stderr, "TaskYield: task %p", task);
+	PrintDebugTaskMessage( "TaskYield: ",cs , task);
 	cs->tdq_lock.AssertHeld();
 
 	// If this task is not from a switchto chain, it should be the current task on
@@ -433,11 +445,6 @@ void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
 	if (!payload->from_switchto) {
 		CHECK_EQ(cs->tdq_curthread, task);
 	}
-
-	// The task should be in kDequeued state because only a currently running
-	// task can yield.
-	//TODO: check if onRqDequeued is required?
-	// CHECK(task->task_state.OnRqDequeued());
 
 	// Updates the task state accordingly. This is safe because this task should
 	// be associated with this CPU's agent and protected by this CPU's RQ lock.
@@ -456,7 +463,7 @@ void UleScheduler::TaskBlocked(UleTask* task, const Message& msg) {
       static_cast<const ghost_msg_payload_task_blocked*>(msg.payload());
 	Cpu cpu = topology()->cpu(MyCpu());
 	CpuState* cs = cpu_state(cpu);
-	GHOST_DPRINT(3, stderr, "TaskBlocked: task %p", task);
+	PrintDebugTaskMessage( "TaskBlocked: ", cs, task);
 	cs->tdq_lock.AssertHeld();
 
 	// If this task is not from a switchto chain, it should be the current task on
@@ -479,7 +486,7 @@ void UleScheduler::TaskPreempted(UleTask* task, const Message& msg) {
       static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
   
   CpuState* cs = &cpu_states_[task->ts_cpu];
-  GHOST_DPRINT(3, stderr, "TaskPreempted: task %p", task);
+  PrintDebugTaskMessage( "TaskPreempted: ", cs, task);
   cs->tdq_lock.AssertHeld();
 
   // If this task is not from a switchto chain, it should be the current task on
@@ -521,7 +528,12 @@ void UleScheduler::PutPrevTask(UleTask* task) {
 	// put_prev_task does not update the state, while we update the state here.
 	task->td_state = UleTask::TDS_CAN_RUN;
 
-
+	/*
+	 * Recalculate the priority before we select the target cpu or
+	 * run-queue.
+	 */
+	if (task->basePriority() == UleTask::PRI_TIMESHARE)
+		task->sched_priority();
 	cs->tdq_add(task,0);
 }
 
