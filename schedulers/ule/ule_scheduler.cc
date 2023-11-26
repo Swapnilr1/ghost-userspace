@@ -46,7 +46,7 @@ UleRunq::UleRunq() {
 
 }
 
-int UleRunq::runq_check() {
+bool UleRunq::runq_check() {
   return rq_status != 0;
 }
 
@@ -521,6 +521,11 @@ void UleAgent::AgentThread() {
     }
   }
   
+}
+
+bool CpuState::tdq_isempty() {
+  return ((!tdq_realtime.runq_check()) || 
+   (!tdq_timeshare.runq_check()) || (!tdq_idle.runq_check())) ;
 }
 
 

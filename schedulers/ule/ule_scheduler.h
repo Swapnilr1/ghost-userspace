@@ -58,7 +58,7 @@ public:
   void runq_remove_idx(UleTask *td, u_char *idx);
 
 
-  int runq_check(); // Basically isEmpty - but uses rq_status
+  bool runq_check(); // Basically isEmpty - but uses rq_status
 
 
  private:
@@ -265,6 +265,7 @@ static constexpr int	TDF_NOLOAD=0x00040000; /* Ignore during load avg calculatio
   int tdq_add(UleTask*, int);
   void tdq_setlowpri(UleTask *ctd);
 
+  bool tdq_isempty();
   int tdq_move(CpuState *);
   int tdq_idled();
   void tdq_notify(CpuState *, int);
@@ -310,7 +311,10 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   }
 
   bool Empty(const Cpu& cpu) {
-      return false;
+    CpuState* cs = cpu_state(cpu);
+    absl::MutexLock l(&cs->tdq_lock);
+    bool res = cs->tdq_isempty();
+    return res;
   }
 
   //void DumpState(const Cpu& cpu, int flags) final;
