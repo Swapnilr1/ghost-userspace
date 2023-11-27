@@ -45,7 +45,6 @@ namespace ghost {
 
 UleRunq::UleRunq() {
   rq_status = 0;
-  CHECK(runq_[0].empty());
 }
 
 bool UleRunq::runq_check() {
@@ -434,7 +433,10 @@ void UleScheduler::StartMigrateCurrTask() {
 void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
   	const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
-  	task->ts_cpu = MyCpu();
+
+
+  GHOST_DPRINT(3, stderr, "TaskNew: task = %p, tid = %d, parent tid = %d\n", task, Gtid(payload->gtid).tid(), Gtid(payload->parent_gtid).tid());
+	task->ts_cpu = MyCpu();
 	CpuState *cs = &cpu_states_[task->ts_cpu];
 	PrintDebugTaskMessage("TaskNew: ",cs, task);
 	task->nice=payload->nice;

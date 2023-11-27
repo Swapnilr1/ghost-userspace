@@ -96,17 +96,17 @@ struct UleTask : public Task<> {
 
   // <Fields from struct thread - may need more of them later
   std::list<UleTask*>::iterator td_runq;
-  int		td_rqindex;	/* (t) Run queue index. */
-  u_char		td_base_pri;	/* (t) Thread base kernel priority. */
-	u_char		td_priority;	/* (t) Thread active priority. */
-	u_char		td_pri_class;	/* (t) Scheduling class. */
-	u_char		td_user_pri;	/* (t) User pri from estcpu and nice. */
-	u_char		td_base_user_pri; /* (t) Base user pri */
-  u_char		td_lend_user_pri; /* (t) Lend user pri. */
-  int nice;
+  int		td_rqindex = -1;	/* (t) Run queue index. */
+  u_char		td_base_pri = 0;	/* (t) Thread base kernel priority. */
+	u_char		td_priority = 0;	/* (t) Thread active priority. */
+	u_char		td_pri_class = 0;	/* (t) Scheduling class. */
+	u_char		td_user_pri = 0;	/* (t) User pri from estcpu and nice. */
+	u_char		td_base_user_pri = 0; /* (t) Base user pri */
+  u_char		td_lend_user_pri = 0; /* (t) Lend user pri. */
+  int nice = 0;
   
-	int		td_flags;	/* (t) TDF_* flags. */
-	int		td_inhibitors;	/* (t) Why can not run. */
+	int		td_flags = 0;	/* (t) TDF_* flags. */
+	int		td_inhibitors = 0;	/* (t) Why can not run. */
 
   enum td_states {
 		TDS_INACTIVE = 0x0,
@@ -115,8 +115,8 @@ struct UleTask : public Task<> {
 		TDS_RUNQ,
 		TDS_RUNNING,
     TDS_FINISHED
-	} td_state;			/* (t) thread state */
-  int		td_pinned;	/* (k) Temporary cpu pin count. */
+	} td_state = TDS_INACTIVE;			/* (t) thread state */
+  int		td_pinned = 0;	/* (k) Temporary cpu pin count. */
 
   // Fields from struct thread>
   static constexpr u_int SCHED_INTERACT_THRESH	= 30;
@@ -126,16 +126,16 @@ struct UleTask : public Task<> {
   
   // <Fields from struct td_sched
   // TODO: Decide which ones are relevant later
-  UleRunq	*ts_runq;	/* Run-queue we're queued on. */
-	short		ts_flags;	/* TSF_* flags. */
-	int		ts_cpu;		/* CPU that we have affinity for. */
-	int		ts_rltick;	/* Real last tick, for affinity. */
-	int		ts_slice;	/* Ticks of slice remaining. */
-	u_int		ts_slptime;	/* Number of ticks we vol. slept */
-	u_int		ts_runtime;	/* Number of ticks we were running */
-	int		ts_ltick;	/* Last tick that we were running on */
-	int		ts_ftick;	/* First tick that we were running on */
-	int		ts_ticks;	/* Tick count */
+  UleRunq	*ts_runq = nullptr;	/* Run-queue we're queued on. */
+	short		ts_flags = 0;	/* TSF_* flags. */
+	int		ts_cpu = 0;		/* CPU that we have affinity for. */
+	int		ts_rltick = 0;	/* Real last tick, for affinity. */
+	int		ts_slice = 0;	/* Ticks of slice remaining. */
+	u_int		ts_slptime = 0;	/* Number of ticks we vol. slept */
+	u_int		ts_runtime = 0;	/* Number of ticks we were running */
+	int		ts_ltick = 0;	/* Last tick that we were running on */
+	int		ts_ftick = 0;	/* First tick that we were running on */
+	int		ts_ticks = 0;	/* Tick count */
 
   /*
   * Priority classes.
@@ -270,16 +270,16 @@ static constexpr int	TDF_NOLOAD=0x00040000; /* Ignore during load avg calculatio
   UleRunq tdq_timeshare;/* (t) timeshare run queue. */
   UleRunq tdq_idle;/* (t) Queue of IDLE threads. */
 
-	int		tdq_load;	/* (ts) Aggregate load. */
-	int		tdq_sysload;	/* (ts) For loadavg, !ITHD load. */
-	int		tdq_cpu_idle;	/* (ls) cpu_idle() is active. */
-	int		tdq_transferable; /* (ts) Transferable thread count. */
-	short		tdq_switchcnt;	/* (l) Switches this tick. */
-	short		tdq_oldswitchcnt; /* (l) Switches last tick. */
-	u_char		tdq_lowpri;	/* (ts) Lowest priority thread. */
-	u_char		tdq_owepreempt;	/* (f) Remote preemption pending. */
-	u_char		tdq_idx;	/* (t) Current insert index. */
-	u_char		tdq_ridx;	/* (t) Current removal index. */
+	int		tdq_load = 0;	/* (ts) Aggregate load. */
+	int		tdq_sysload = 0;	/* (ts) For loadavg, !ITHD load. */
+	int		tdq_cpu_idle = 0;	/* (ls) cpu_idle() is active. */
+	int		tdq_transferable = 0; /* (ts) Transferable thread count. */
+	short		tdq_switchcnt = 0;	/* (l) Switches this tick. */
+	short		tdq_oldswitchcnt = 0; /* (l) Switches last tick. */
+	u_char		tdq_lowpri = 0; // TODO:Fix this	/* (ts) Lowest priority thread. */
+	u_char		tdq_owepreempt = 0;	/* (f) Remote preemption pending. */
+	u_char		tdq_idx = 0;	/* (t) Current insert index. */
+	u_char		tdq_ridx = 0;	/* (t) Current removal index. */
 
   // ID of the cpu.
   int tdq_id = -1;
