@@ -229,6 +229,89 @@ void UleTask::sched_priority()
 }
 
 /*
+ * Adjust the priority of a thread.  Move it to the appropriate run-queue
+ * if necessary.  This is the back-end for several priority related
+ * functions.
+ */
+void UleScheduler::sched_thread_priority(UleTask* td, u_char prio)
+{
+	CpuState* tdq;
+	int oldpri;
+	// THREAD_LOCK_ASSERT(td, MA_OWNED);
+	
+	if (td->td_priority == prio)
+		return;
+	/*
+	 * If the priority has been elevated due to priority
+	 * propagation, we may have to move ourselves to a new
+	 * queue.  This could be optimized to not re-add in some
+	 * cases.
+	 */
+	if (td->td_state == UleTask::TDS_RUNQ && prio < td->td_priority) {
+		sched_rem(td);
+		td->td_priority = prio;
+		sched_add(td, SRQ_BORROWING | SRQ_HOLDTD);
+		return;
+	}
+	/*
+	 * If the thread is currently running we may have to adjust the lowpri
+	 * information so other cpus are aware of our current priority.
+	 */
+	if (td->td_state == UleTask::TDS_RUNNING) {
+		tdq=&cpu_states_[td->ts_cpu];
+		oldpri = td->td_priority;
+		td->td_priority = prio;
+		if (prio < tdq->tdq_lowpri)
+			tdq->tdq_lowpri = prio;
+		else if (tdq->tdq_lowpri == oldpri)
+			tdq->tdq_setlowpri(td);
+		return;
+	}
+	td->td_priority = prio;
+}
+
+/*
+ * Remove a thread from a run-queue without running it.  This is used
+ * when we're stealing a thread from a remote queue.  Otherwise all threads
+ * exit by calling sched_exit_thread() and sched_throw() themselves.
+ */
+void UleScheduler::sched_rem(UleTask *td)
+{
+	CpuState *tdq;
+
+	tdq = &cpu_states_[td->ts_cpu];
+	tdq->tdq_lock.AssertHeld();
+	CHECK(td->td_state == UleTask::TDS_RUNQ);
+	tdq->tdq_runq_rem(td);
+	
+	tdq->tdq_load_rem(td);
+	td->td_state = UleTask::TDS_CAN_RUN;
+	if (td->td_priority == tdq->tdq_lowpri)
+		tdq->tdq_setlowpri(NULL);
+}
+
+/*
+ * Select the target thread queue and add a thread to it.  Request
+ * preemption or IPI a remote processor if required.
+ *
+ * Requires the thread lock on entry, drops on exit.
+ */
+void UleScheduler::sched_add(UleTask *td, int flags)
+{
+	CpuState *tdq = &cpu_states_[td->ts_cpu];;
+
+	// THREAD_LOCK_ASSERT(td, MA_OWNED);
+	/*
+	 * Recalculate the priority before we select the target run-queue.
+	 */
+	if (td->basePriority() == UleTask::PRI_TIMESHARE)
+		td->sched_priority();
+	tdq->tdq_add(td, flags);
+}
+
+
+
+/*
  * Set the base user priority, does not effect current running priority.
  */
 void UleTask::sched_user_prio(u_char prio)
@@ -351,16 +434,13 @@ void UleScheduler::StartMigrateCurrTask() {
 void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
   	const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
-
-
-  GHOST_DPRINT(3, stderr, "TaskNew: task = %p", task);
-	task->ts_cpu = MyCpu();
+  	task->ts_cpu = MyCpu();
 	CpuState *cs = &cpu_states_[task->ts_cpu];
+	PrintDebugTaskMessage("TaskNew: ",cs, task);
 	task->nice=payload->nice;
 	task->sched_priority();
 	task->seqnum = msg.seqnum();
 	if (payload->runnable) {
-		PrintDebugTaskMessage("TaskNew: ",cs, task);
 		task->td_state = UleTask::TDS_CAN_RUN;
 		/*
 		* Recalculate the priority before we select the target cpu or
@@ -377,10 +457,9 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
   // TODO: Adjust time slices stats
-
-  GHOST_DPRINT(3, stderr, "TaskRunnable: task = %p", task);
 	task->ts_cpu = MyCpu();
 	CpuState *cs = &cpu_states_[task->ts_cpu];
+	PrintDebugTaskMessage("TaskRunnable: ", cs, task);
   	cs->tdq_lock.AssertHeld();
     // If this is our current task, then we will defer its proccessing until
 	// PickNextTask. Otherwise, use the normal wakeup logic.
@@ -391,7 +470,6 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 	}
 
 	if (payload->runnable) {
-		PrintDebugTaskMessage("TaskRunnable: ", cs, task);
 		task->td_state = UleTask::TDS_CAN_RUN;
 		/*
 		* Recalculate the priority before we select the target cpu or
@@ -457,12 +535,6 @@ void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
 	// be associated with this CPU's agent and protected by this CPU's RQ lock.
 	PutPrevTask(task);
 
-	// This task was the last task in a switchto chain on a remote CPU. We should
-	// ping the remote CPU to schedule a new task.
-	if (payload->cpu != cpu.id()) {
-		CHECK(payload->from_switchto);
-		PingCpu(topology()->cpu(payload->cpu));
-	}
 }
 
 void UleScheduler::TaskBlocked(UleTask* task, const Message& msg) {

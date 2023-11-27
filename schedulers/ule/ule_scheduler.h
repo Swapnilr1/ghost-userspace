@@ -196,7 +196,6 @@ struct CpuState {
   #define	TDQ_TRYLOCK(t)		mtx_trylock_spin(TDQ_LOCKPTR((t)))
   #define	TDQ_TRYLOCK_FLAGS(t, f)	mtx_trylock_spin_flags(TDQ_LOCKPTR((t)), (f))
   #define	TDQ_UNLOCK(t)		mtx_unlock_spin(TDQ_LOCKPTR((t)))
-#define	TDQ_LOCKPTR(t)		((struct mtx *)(&(t)->tdq_lock))
 
 #define	TD_SET_STATE(td, state)	(td)->td_state = state
 
@@ -381,6 +380,10 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   void TaskAffinityChanged(UleTask* task, const Message& msg) final;
   void TaskPriorityChanged(UleTask* task, const Message& msg) final;
   void CpuTick(const Message& msg) final;
+  void sched_thread_priority(UleTask* td, u_char prio);
+  void sched_add(UleTask *td, int flags);
+  void sched_rem(UleTask *td);
+
 
  private:
 
