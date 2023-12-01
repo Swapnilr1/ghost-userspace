@@ -383,6 +383,7 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   void sched_thread_priority(UleTask* td, u_char prio);
   void sched_add(UleTask *td, int flags);
   void sched_rem(UleTask *td);
+  void sched_prio(UleTask *td, u_char prio);
 
 
  private:

@@ -228,6 +228,33 @@ void UleTask::sched_priority()
 }
 
 /*
+ * Standard entry for setting the priority to an absolute value.
+ */
+void UleScheduler::sched_prio(UleTask *td, u_char prio)
+{
+
+	/* First, update the base priority. */
+	td->td_base_pri = prio;
+
+	// /*
+	//  * If the thread is borrowing another thread's priority, don't
+	//  * ever lower the priority.
+	//  */
+	// if (td->td_flags & TDF_BORROWING && td->td_priority < prio)
+	// 	return;
+
+	/* Change the real priority. */
+	this->sched_thread_priority(td, prio);
+
+	// /*
+	//  * If the thread is on a turnstile, then let the turnstile update
+	//  * its state.
+	//  */
+	// if (TD_ON_LOCK(td) && oldprio != prio)
+	// 	turnstile_adjust(td, oldprio);
+}
+
+/*
  * Adjust the priority of a thread.  Move it to the appropriate run-queue
  * if necessary.  This is the back-end for several priority related
  * functions.
@@ -441,6 +468,7 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 	PrintDebugTaskMessage("TaskNew: ",cs, task);
 	task->nice=payload->nice;
 	task->sched_priority();
+	sched_prio(task, task->td_base_pri); // ULE: In sched_nice we update the td_priority
 	task->seqnum = msg.seqnum();
 	if (payload->runnable) {
 		task->td_state = UleTask::TDS_CAN_RUN;
