@@ -178,6 +178,9 @@ struct UleTask : public Task<> {
 	u_char		td_user_pri =  UleConstants::PRI_MIN_TIMESHARE;	/* (t) User pri from estcpu and nice. */
 	u_char		td_base_user_pri = UleConstants::PRI_MIN_TIMESHARE; /* (t) Base user pri */
   u_char		td_lend_user_pri = UleConstants::PRI_MAX; /* (t) Lend user pri. */
+  absl::Time sleepStartTime; /* Time when thread goes for voluntary sleep time*/
+  u_int		ts_slptime = 0;	/* Duration we vol. slept - ns */
+	u_int		ts_runtime = 0;	/* Duration we were running  -ns */
   int nice = 0;
   
 	int		td_flags = 0;	/* (t) TDF_* flags. */
@@ -202,8 +205,6 @@ struct UleTask : public Task<> {
 	int		ts_cpu = 0;		/* CPU that we have affinity for. */
 	int		ts_rltick = 0;	/* Real last tick, for affinity. */
 	int		ts_slice = 0;	/* Ticks of slice remaining. */
-	u_int		ts_slptime = 0;	/* Number of ticks we vol. slept */
-	u_int		ts_runtime = 0;	/* Number of ticks we were running */
 	int		ts_ltick = 0;	/* Last tick that we were running on */
 	int		ts_ftick = 0;	/* First tick that we were running on */
 	int		ts_ticks = 0;	/* Tick count */

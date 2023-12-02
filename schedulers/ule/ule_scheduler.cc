@@ -195,8 +195,8 @@ void UleTask::sched_priority()
 {
 	u_int pri, score;
 
-	if (this->basePriority() != UleConstants::PRI_TIMESHARE)
-		return;
+	// if (this->basePriority() != PRI_TIMESHARE)
+	// 	return;
 	/*
 	 * If the score is interactive we place the thread in the realtime
 	 * queue with a priority that is less than kernel and interrupt
@@ -211,6 +211,7 @@ void UleTask::sched_priority()
 	 * considered interactive.
 	 */
 	score = std::max(0, this->sched_interact_score()+nice);
+	GHOST_DPRINT(3, stderr, "UleTask::sched_priority: interactivity score %d", score);
 	if (score < UleConstants::sched_interact) {
 		pri = UleConstants::PRI_MIN_INTERACT;
 		pri += (UleConstants::PRI_MAX_INTERACT - UleConstants::PRI_MIN_INTERACT + 1) * score /
@@ -245,7 +246,6 @@ void UleScheduler::sched_prio(UleTask *td, u_char prio)
 
 	/* Change the real priority. */
 	this->sched_thread_priority(td, prio);
-
 	// /*
 	//  * If the thread is on a turnstile, then let the turnstile update
 	//  * its state.
@@ -508,6 +508,8 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 		if (task->basePriority() == UleConstants::PRI_TIMESHARE)
 			task->sched_priority();
 		cs->tdq_add(task, 0);
+		task->ts_slptime += absl::ToInt64Nanoseconds(MonotonicNow() - task->sleepStartTime);
+		GHOST_DPRINT(3, stderr, "TaskRunnable: sleep time updated to %d", task->ts_slptime);
 	}
 }
 
@@ -560,11 +562,11 @@ void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
 	if (!payload->from_switchto) {
 		CHECK_EQ(cs->tdq_curthread, task);
 	}
-
+	task->sleepStartTime=MonotonicNow();
 	// Updates the task state accordingly. This is safe because this task should
 	// be associated with this CPU's agent and protected by this CPU's RQ lock.
 	PutPrevTask(task);
-
+	
 }
 
 void UleScheduler::TaskBlocked(UleTask* task, const Message& msg) {
@@ -574,6 +576,7 @@ void UleScheduler::TaskBlocked(UleTask* task, const Message& msg) {
 	CpuState* cs = cpu_state(cpu);
 	PrintDebugTaskMessage( "TaskBlocked: ", cs, task);
 	cs->tdq_lock.AssertHeld();
+	task->sleepStartTime=MonotonicNow();
 
 	// If this task is not from a switchto chain, it should be the current task on
 	// this CPU.
@@ -763,7 +766,6 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
       Pause();
     }
 
-    uint64_t before_runtime = next->status_word.runtime();
     if (req->Commit()) {
       GHOST_DPRINT(3, stderr, "Task %s oncpu %d", next->gtid.describe(),
                    cpu.id());
@@ -783,9 +785,9 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
       //         = wall_runtime * precomputed_inverse_weight / 2^22
 
       // TODO: Update this
-      // uint64_t runtime = next->status_word.runtime() - before_runtime;
-      // next->vruntime += absl::Nanoseconds(static_cast<uint64_t>(
-      //     static_cast<absl::uint128>(next->inverse_weight) * runtime >> 22));
+      next->ts_runtime = next->status_word.runtime();
+	  GHOST_DPRINT(3, stderr, "UleSchedule: next->ts_runtime - %d",
+                   next->ts_runtime);
     } else {
       GHOST_DPRINT(3, stderr, "UleSchedule: commit failed (state=%d)",
                    req->state());
@@ -1116,7 +1118,6 @@ int CpuState::tdq_add(UleTask *td, int flags)
  */
 UleTask * CpuState::tdq_steal(int cpu)
 {
-	UleTask *td;
 	tdq_lock.AssertHeld();
 	//TODO: runq_steal needs to be implemented 
 	// if ((td = tdq_realtime.runq_steal(cpu)) != NULL)
