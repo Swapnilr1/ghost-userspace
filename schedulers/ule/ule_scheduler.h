@@ -23,6 +23,7 @@ static const absl::Time start = absl::Now();
 
 namespace ghost {
 
+struct UleConstants {
 static constexpr int SRQ_BORING	= 0x0000;		/* No special circumstances. */
 static constexpr int SRQ_YIELDING	= 0x0001;		/* We are yielding (from mi_switch). */
 static constexpr int SRQ_OURSELF	= 0x0002;		/* It is ourself (from mi_switch). */
@@ -32,14 +33,88 @@ static constexpr int SRQ_BORROWING = 0x0010;		/* Priority updated due to prio_le
 static constexpr int SRQ_HOLD =	0x0020;		/* Return holding original td lock */
 static constexpr int SRQ_HOLDTD =	0x0040;		/* Return holding td lock */
 
+static constexpr int RQ_NQS	=	64;		/* Number of run queues. */
+static constexpr int RQ_PPQ	=	4;		/* Priorities per queue. */
+
+static constexpr u_int SCHED_INTERACT_THRESH	= 30;
+static constexpr u_int	SCHED_INTERACT_MAX	= 100;
+static constexpr u_int	SCHED_INTERACT_HALF	=  (SCHED_INTERACT_MAX / 2);
+static constexpr u_int sched_interact = SCHED_INTERACT_THRESH;
+
+static constexpr int	PRI_ITHD = 1;	/* Interrupt thread. */
+static constexpr int	PRI_REALTIME	= 2;	/* Real time process. */
+static constexpr int	PRI_TIMESHARE	= 3;	/* Time sharing process. */
+static constexpr int PRI_IDLE	=4;	/* Idle process. */
+
+static constexpr int	PRI_FIFO_BIT	=	8;
+static constexpr int	PRI_FIFO	=(PRI_FIFO_BIT | PRI_REALTIME);
+
+static constexpr int PRIO_MIN = -20;
+static constexpr int PRIO_MAX = 20;
+
+/*
+ * These macros determine priorities for non-interactive threads.  They are
+ * assigned a priority based on their recent cpu utilization as expressed
+ * by the ratio of ticks to the tick total.  NHALF priorities at the start
+ * and end of the MIN to MAX timeshare range are only reachable with negative
+ * or positive nice respectively.
+ *
+ * PRI_RANGE:	Priority range for utilization dependent priorities.
+ * PRI_NRESV:	Number of nice values.
+ * PRI_TICKS:	Compute a priority in PRI_RANGE from the ticks count and total.
+ * PRI_NICE:	Determines the part of the priority inherited from nice.
+ */
+static constexpr int	PRI_MIN = 0;		/* Highest priority. */
+static constexpr int	PRI_MAX = 255;		/* Lowest priority. */
+static constexpr int PRI_MIN_TIMESHARE=88;
+static constexpr int PRI_MIN_IDLE = 224;
+static constexpr int PRI_MAX_TIMESHARE=PRI_MIN_IDLE - 1;
+static constexpr int	PRI_MAX_BATCH =		PRI_MAX_TIMESHARE;
+static constexpr int SCHED_PRI_NRESV =	(PRIO_MAX - PRIO_MIN);
+static constexpr int	PRI_TIMESHARE_RANGE= (PRI_MAX_TIMESHARE - PRI_MIN_TIMESHARE + 1);
+static constexpr int	PRI_INTERACT_RANGE =	((PRI_TIMESHARE_RANGE - SCHED_PRI_NRESV) / 2);
+static constexpr int	PRI_MAX_INTERACT =	(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE - 1);
+static constexpr int	PRI_MIN_BATCH =		(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE);
+
+static constexpr int SCHED_PRI_NHALF =	(SCHED_PRI_NRESV / 2);
+static constexpr int SCHED_PRI_MIN = PRI_MIN_BATCH + SCHED_PRI_NHALF;
+static constexpr int SCHED_PRI_MAX =	PRI_MAX_BATCH - SCHED_PRI_NHALF;
+static constexpr int SCHED_PRI_RANGE =	SCHED_PRI_MAX - SCHED_PRI_MIN + 1;
+static constexpr int	PRI_MIN_INTERACT =	PRI_MIN_TIMESHARE;
+static constexpr int PRI_MAX_IDLE	= PRI_MAX;
+static constexpr int	PRI_BATCH_RANGE	= (PRI_TIMESHARE_RANGE - PRI_INTERACT_RANGE);
+static constexpr int	PUSER	= (PRI_MIN_TIMESHARE);
+static constexpr int	SCHED_TICK_SHIFT= 10;
+//TODO: find the hz value
+static constexpr int hz=10;
+
+
+static constexpr int 	PRI_MIN_KERN = 48;
+static constexpr int preempt_thresh = PRI_MIN_KERN;
+
+static constexpr int	TDF_INMEM = 0x00000004; /* Thread's stack is in memory. */
+static constexpr int	TDF_NOLOAD=0x00040000; /* Ignore during load avg calculations. */
+
+/*
+ * These parameters determine the slice behavior for batch work.
+ */
+static constexpr int	SCHED_SLICE_DEFAULT_DIVISOR =	10;	/* ~94 ms, 12 stathz ticks. */
+static constexpr int	SCHED_SLICE_MIN_DIVISOR	= 6;	/* DEFAULT/MIN = ~16 ms. */
+
+  // sched_slice:		Runtime of each thread before rescheduling.
+static constexpr int sched_slice = 10;	/* reset during boot. */
+static constexpr int sched_slice_min=1;	/* reset during boot. */
+
+
+
+};
 
 class UleTask;
 
 class UleRunq {
   
 public:
-  static constexpr int RQ_NQS	=	64;		/* Number of run queues. */
-  static constexpr int RQ_PPQ	=	4;		/* Priorities per queue. */
+  
   explicit UleRunq();
   UleRunq(const UleRunq&) = delete;
   UleRunq& operator=(UleRunq&) = delete;
@@ -83,7 +158,7 @@ public:
   }
 
   
-  std::list<UleTask*> runq_[RQ_NQS];
+  std::list<UleTask*> runq_[UleConstants::RQ_NQS];
   uint64_t rq_status; // Bitset of non-empty queues
 
 };
@@ -97,12 +172,12 @@ struct UleTask : public Task<> {
   // <Fields from struct thread - may need more of them later
   std::list<UleTask*>::iterator td_runq;
   int		td_rqindex = -1;	/* (t) Run queue index. */
-  u_char		td_base_pri = 0;	/* (t) Thread base kernel priority. */
-	u_char		td_priority = 0;	/* (t) Thread active priority. */
-	u_char		td_pri_class = 0;	/* (t) Scheduling class. */
-	u_char		td_user_pri = 0;	/* (t) User pri from estcpu and nice. */
-	u_char		td_base_user_pri = 0; /* (t) Base user pri */
-  u_char		td_lend_user_pri = 0; /* (t) Lend user pri. */
+  u_char		td_base_pri = 52;	/* (t) Thread base kernel priority. */
+	u_char		td_priority = 52;	/* (t) Thread active priority. */
+	u_char		td_pri_class = UleConstants::PRI_TIMESHARE;	/* (t) Scheduling class. */
+	u_char		td_user_pri =  UleConstants::PRI_MIN_TIMESHARE;	/* (t) User pri from estcpu and nice. */
+	u_char		td_base_user_pri = UleConstants::PRI_MIN_TIMESHARE; /* (t) Base user pri */
+  u_char		td_lend_user_pri = UleConstants::PRI_MAX; /* (t) Lend user pri. */
   int nice = 0;
   
 	int		td_flags = 0;	/* (t) TDF_* flags. */
@@ -119,10 +194,6 @@ struct UleTask : public Task<> {
   int		td_pinned = 0;	/* (k) Temporary cpu pin count. */
 
   // Fields from struct thread>
-  static constexpr u_int SCHED_INTERACT_THRESH	= 30;
-  static constexpr u_int	SCHED_INTERACT_MAX	= 100;
-  static constexpr u_int	SCHED_INTERACT_HALF	=  (SCHED_INTERACT_MAX / 2);
-  static constexpr u_int sched_interact = SCHED_INTERACT_THRESH;
   
   // <Fields from struct td_sched
   // TODO: Decide which ones are relevant later
@@ -138,29 +209,23 @@ struct UleTask : public Task<> {
 	int		ts_ticks = 0;	/* Tick count */
 
   /*
-  * Priority classes.
+  * Priority classes. Only PRI_TIMESHARE is relevant within userspace scheduling
   */
-  static constexpr int	PRI_ITHD = 1;	/* Interrupt thread. */
-  static constexpr int	PRI_REALTIME	= 2;	/* Real time process. */
-  static constexpr int	PRI_TIMESHARE	= 3;	/* Time sharing process. */
-  static constexpr int PRI_IDLE	=4;	/* Idle process. */
 
   /*
   * PRI_FIFO is POSIX.1B SCHED_FIFO.
   */
 
-  static constexpr int	PRI_FIFO_BIT	=	8;
-  static constexpr int	PRI_FIFO	=(PRI_FIFO_BIT | PRI_REALTIME);
 
   // #define	PRI_NEED_RR(P)		((P) != PRI_FIFO)
 
     // <Fields from struct td_sched > 
   public: 
   inline int basePriority(){
-    return ((td_pri_class) & ~PRI_FIFO_BIT);
+    return ((td_pri_class) & ~UleConstants::PRI_FIFO_BIT);
   }
   inline bool isRealTime(){
-    return (this->basePriority() == PRI_REALTIME);
+    return (this->basePriority() == UleConstants::PRI_REALTIME);
   }
   int sched_interact_score();
   void sched_priority();
@@ -168,8 +233,6 @@ struct UleTask : public Task<> {
 };
 
 struct CpuState {
-  static constexpr int PRIO_MIN = -20;
-  static constexpr int PRIO_MAX = 20;
 
 
   /* flags kept in ts_flags */
@@ -200,66 +263,16 @@ struct CpuState {
 #define	TD_SET_STATE(td, state)	(td)->td_state = state
 
 
-/*
- * These macros determine priorities for non-interactive threads.  They are
- * assigned a priority based on their recent cpu utilization as expressed
- * by the ratio of ticks to the tick total.  NHALF priorities at the start
- * and end of the MIN to MAX timeshare range are only reachable with negative
- * or positive nice respectively.
- *
- * PRI_RANGE:	Priority range for utilization dependent priorities.
- * PRI_NRESV:	Number of nice values.
- * PRI_TICKS:	Compute a priority in PRI_RANGE from the ticks count and total.
- * PRI_NICE:	Determines the part of the priority inherited from nice.
- */
-static constexpr int	PRI_MIN = 0;		/* Highest priority. */
-static constexpr int	PRI_MAX = 255;		/* Lowest priority. */
-static constexpr int PRI_MIN_TIMESHARE=88;
-static constexpr int PRI_MIN_IDLE = 224;
-static constexpr int PRI_MAX_TIMESHARE=PRI_MIN_IDLE - 1;
-static constexpr int	PRI_MAX_BATCH =		PRI_MAX_TIMESHARE;
-static constexpr int SCHED_PRI_NRESV =	(PRIO_MAX - PRIO_MIN);
-static constexpr int	PRI_TIMESHARE_RANGE= (PRI_MAX_TIMESHARE - PRI_MIN_TIMESHARE + 1);
-static constexpr int	PRI_INTERACT_RANGE =	((PRI_TIMESHARE_RANGE - SCHED_PRI_NRESV) / 2);
-static constexpr int	PRI_MAX_INTERACT =	(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE - 1);
-static constexpr int	PRI_MIN_BATCH =		(PRI_MIN_TIMESHARE + PRI_INTERACT_RANGE);
-
-static constexpr int SCHED_PRI_NHALF =	(SCHED_PRI_NRESV / 2);
-static constexpr int SCHED_PRI_MIN = PRI_MIN_BATCH + SCHED_PRI_NHALF;
-static constexpr int SCHED_PRI_MAX =	PRI_MAX_BATCH - SCHED_PRI_NHALF;
-static constexpr int SCHED_PRI_RANGE =	SCHED_PRI_MAX - SCHED_PRI_MIN + 1;
-static constexpr int	PRI_MIN_INTERACT =	PRI_MIN_TIMESHARE;
-static constexpr int PRI_MAX_IDLE	= PRI_MAX;
-static constexpr int	PRI_BATCH_RANGE	= (PRI_TIMESHARE_RANGE - PRI_INTERACT_RANGE);
-static constexpr int	PUSER	= (PRI_MIN_TIMESHARE);
-static constexpr int	SCHED_TICK_SHIFT= 10;
-//TODO: find the hz value
-static constexpr int hz=10;
-#define	SCHED_TICK_HZ(ts)	((ts)->ts_ticks >> SCHED_TICK_SHIFT)
-#define	SCHED_TICK_TOTAL(ts)	(std::max((ts)->ts_ltick - (ts)->ts_ftick, hz))
+#define	SCHED_TICK_HZ(ts)	((ts)->ts_ticks >> UleConstants::SCHED_TICK_SHIFT)
+#define	SCHED_TICK_TOTAL(ts)	(std::max((ts)->ts_ltick - (ts)->ts_ftick, UleConstants::hz))
 #define roundup(x, y)   ((((x) % (y)) == 0) ? \
 	                (x) : ((x) + ((y) - ((x) % (y)))))
 
-static constexpr int 	PRI_MIN_KERN = 48;
-static constexpr int preempt_thresh = PRI_MIN_KERN;
-
-static constexpr int	TDF_INMEM = 0x00000004; /* Thread's stack is in memory. */
-static constexpr int	TDF_NOLOAD=0x00040000; /* Ignore during load avg calculations. */
 
   // current points to the CfsTask that we most recently picked to run on the
   // cpu. Note, we say most recently picked as a txn could fail leaving us with
   // current pointing to a task that is not currently on cpu.
   UleTask* tdq_curthread = nullptr;
-
-/*
- * These parameters determine the slice behavior for batch work.
- */
-  static constexpr int	SCHED_SLICE_DEFAULT_DIVISOR =	10;	/* ~94 ms, 12 stathz ticks. */
- static constexpr int	SCHED_SLICE_MIN_DIVISOR	= 6;	/* DEFAULT/MIN = ~16 ms. */
-
-  // sched_slice:		Runtime of each thread before rescheduling.
-  static constexpr int sched_slice = 10;	/* reset during boot. */
-  static constexpr int sched_slice_min=1;	/* reset during boot. */
 
   // pointer to the kernel ipc queue.
   std::unique_ptr<Channel> channel = nullptr;
@@ -310,7 +323,7 @@ static constexpr int	TDF_NOLOAD=0x00040000; /* Ignore during load avg calculatio
   inline void thread_unblock_switch(UleTask *, struct mtx *);
 
   static int getSchedPriTicks(UleTask* ts){						
-    return (SCHED_TICK_HZ((ts))/(roundup(SCHED_TICK_TOTAL((ts)), SCHED_PRI_RANGE) / SCHED_PRI_RANGE));
+    return (SCHED_TICK_HZ((ts))/(roundup(SCHED_TICK_TOTAL((ts)), UleConstants::SCHED_PRI_RANGE) / UleConstants::SCHED_PRI_RANGE));
   }
   
   //Can be considered later if we enable CPU topology

@@ -53,10 +53,10 @@ bool UleRunq::runq_check() {
 
 
 void UleRunq::runq_add(UleTask *task, int flags) {
-	int pri = task->td_priority / RQ_PPQ;
+	int pri = task->td_priority / UleConstants::RQ_PPQ;
 	task->td_rqindex = pri;
 	runq_setbit(pri);
-	if (flags & SRQ_PREEMPTED) {
+	if (flags & UleConstants::SRQ_PREEMPTED) {
 		runq_[pri].push_front(task);
     task->td_runq = runq_[pri].begin();
 	} else {
@@ -65,10 +65,10 @@ void UleRunq::runq_add(UleTask *task, int flags) {
 	}
 }
 void UleRunq::runq_add_pri(UleTask *task, u_char pri, int flags) {
-	CHECK(pri < RQ_NQS);
+	CHECK(pri < UleConstants::RQ_NQS);
 	task->td_rqindex = pri;
 	runq_setbit(pri);
-	if (flags & SRQ_PREEMPTED) {
+	if (flags & UleConstants::SRQ_PREEMPTED) {
 		runq_[pri].push_front(task);
     task->td_runq = runq_[pri].begin();
 	} else {
@@ -121,7 +121,7 @@ void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
   // TODO: Check later if these checks make sense
 	// CHECK(td->td_flags & TDF_INMEM); // "runq_remove_idx: thread swapped out"
 	pri = td->td_rqindex;
-	CHECK(pri < RQ_NQS); // ("runq_remove_idx: Invalid index %d\n", pri));
+	CHECK(pri < UleConstants::RQ_NQS); // ("runq_remove_idx: Invalid index %d\n", pri));
 	rqh = &runq_[pri];
   	runq_[pri].erase(td->td_runq);
 	td->td_rqindex = -1; // A way to denote invalid iterator
@@ -129,7 +129,7 @@ void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
 		//CTR0(KTR_RUNQ, "runq_remove_idx: empty");
 		runq_clrbit(pri);
 		if (idx != NULL && *idx == pri)
-			*idx = (pri + 1) % RQ_NQS;
+			*idx = (pri + 1) % UleConstants::RQ_NQS;
 	}
 }
 
@@ -164,22 +164,22 @@ int UleTask::sched_interact_score()
 	 * task.  Don't go through the expense of computing it if there's
 	 * no chance.
 	 */
-	if (sched_interact <= SCHED_INTERACT_HALF &&
+	if (UleConstants::sched_interact <= UleConstants::SCHED_INTERACT_HALF &&
 		ts_runtime >= ts_slptime)
-			return (SCHED_INTERACT_HALF);
+			return (UleConstants::SCHED_INTERACT_HALF);
 
 	if (ts_runtime > ts_slptime) {
-		div = std::max(u_int(1), ts_runtime / SCHED_INTERACT_HALF);
-		return (SCHED_INTERACT_HALF +
-		    (SCHED_INTERACT_HALF - (ts_slptime / div)));
+		div = std::max(u_int(1), ts_runtime / UleConstants::SCHED_INTERACT_HALF);
+		return (UleConstants::SCHED_INTERACT_HALF +
+		    (UleConstants::SCHED_INTERACT_HALF - (ts_slptime / div)));
 	}
 	if (ts_slptime > ts_runtime) {
-		div = std::max(u_int(1), ts_slptime / SCHED_INTERACT_HALF);
+		div = std::max(u_int(1), ts_slptime / UleConstants::SCHED_INTERACT_HALF);
 		return (ts_runtime / div);
 	}
 	/* runtime == slptime */
 	if (ts_runtime)
-		return (SCHED_INTERACT_HALF);
+		return (UleConstants::SCHED_INTERACT_HALF);
 
 	/*
 	 * This can happen if slptime and runtime are 0.
@@ -195,7 +195,7 @@ void UleTask::sched_priority()
 {
 	u_int pri, score;
 
-	if (this->basePriority() != PRI_TIMESHARE)
+	if (this->basePriority() != UleConstants::PRI_TIMESHARE)
 		return;
 	/*
 	 * If the score is interactive we place the thread in the realtime
@@ -211,17 +211,17 @@ void UleTask::sched_priority()
 	 * considered interactive.
 	 */
 	score = std::max(0, this->sched_interact_score()+nice);
-	if (score < sched_interact) {
-		pri = CpuState::PRI_MIN_INTERACT;
-		pri += (CpuState::PRI_MAX_INTERACT - CpuState::PRI_MIN_INTERACT + 1) * score /
-		    sched_interact;
-		CHECK(pri >= CpuState::PRI_MIN_INTERACT && pri <= CpuState::PRI_MAX_INTERACT);
+	if (score < UleConstants::sched_interact) {
+		pri = UleConstants::PRI_MIN_INTERACT;
+		pri += (UleConstants::PRI_MAX_INTERACT - UleConstants::PRI_MIN_INTERACT + 1) * score /
+		    UleConstants::sched_interact;
+		CHECK(pri >= UleConstants::PRI_MIN_INTERACT && pri <= UleConstants::PRI_MAX_INTERACT);
 	} else {
-		pri = CpuState::SCHED_PRI_MIN;
+		pri = UleConstants::SCHED_PRI_MIN;
 		if (ts_ticks)
-			pri += std::min(CpuState::getSchedPriTicks(this),CpuState::SCHED_PRI_RANGE - 1);
+			pri += std::min(CpuState::getSchedPriTicks(this),UleConstants::SCHED_PRI_RANGE - 1);
 		pri += nice;
-		CHECK(pri >= CpuState::PRI_MIN_BATCH && pri <= CpuState::PRI_MAX_BATCH);
+		CHECK(pri >= UleConstants::PRI_MIN_BATCH && pri <= UleConstants::PRI_MAX_BATCH);
 	}
 	this->sched_user_prio(pri);
 	return;
@@ -276,7 +276,7 @@ void UleScheduler::sched_thread_priority(UleTask* td, u_char prio)
 	if (td->td_state == UleTask::TDS_RUNQ && prio < td->td_priority) {
 		sched_rem(td);
 		td->td_priority = prio;
-		sched_add(td, SRQ_BORROWING | SRQ_HOLDTD);
+		sched_add(td, UleConstants::SRQ_BORROWING | UleConstants::SRQ_HOLDTD);
 		return;
 	}
 	/*
@@ -330,7 +330,7 @@ void UleScheduler::sched_add(UleTask *td, int flags)
 	/*
 	 * Recalculate the priority before we select the target run-queue.
 	 */
-	if (td->basePriority() == UleTask::PRI_TIMESHARE)
+	if (td->basePriority() == UleConstants::PRI_TIMESHARE)
 		td->sched_priority();
 	tdq->tdq_add(td, flags);
 }
@@ -476,7 +476,7 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 		* Recalculate the priority before we select the target cpu or
 		* run-queue.
 		*/
-		if (task->basePriority() == UleTask::PRI_TIMESHARE)
+		if (task->basePriority() == UleConstants::PRI_TIMESHARE)
 			task->sched_priority();
 		cs->tdq_add(task, 0);
 	}
@@ -505,7 +505,7 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 		* Recalculate the priority before we select the target cpu or
 		* run-queue.
 		*/
-		if (task->basePriority() == UleTask::PRI_TIMESHARE)
+		if (task->basePriority() == UleConstants::PRI_TIMESHARE)
 			task->sched_priority();
 		cs->tdq_add(task, 0);
 	}
@@ -639,7 +639,7 @@ void UleScheduler::PutPrevTask(UleTask* task) {
 	 * Recalculate the priority before we select the target cpu or
 	 * run-queue.
 	 */
-	if (task->basePriority() == UleTask::PRI_TIMESHARE)
+	if (task->basePriority() == UleConstants::PRI_TIMESHARE)
 		task->sched_priority();
 	cs->tdq_add(task,0);
 }
@@ -654,7 +654,7 @@ UleTask* UleScheduler::sched_choose(CpuState *tdq) {
 		tdq->tdq_runq_rem(td);
 		tdq->tdq_lowpri = td->td_priority;
 	} else { 
-		tdq->tdq_lowpri = CpuState::PRI_MAX_IDLE;
+		tdq->tdq_lowpri = UleConstants::PRI_MAX_IDLE;
 		td = nullptr;
 	}
 	tdq->tdq_curthread = td;
@@ -898,18 +898,18 @@ __inline void CpuState::tdq_runq_add(UleTask *td, int flags)
 		tdq_transferable++;
 		td->ts_flags |= TSF_XFERABLE;
 	}
-	if (pri < PRI_MIN_BATCH) {
+	if (pri < UleConstants::PRI_MIN_BATCH) {
 		td->ts_runq = &tdq_realtime;
-	} else if (pri <= PRI_MAX_BATCH) {
+	} else if (pri <= UleConstants::PRI_MAX_BATCH) {
 		td->ts_runq = &tdq_timeshare;
-		CHECK(pri <= PRI_MAX_BATCH && pri >= PRI_MIN_BATCH);
+		CHECK(pri <= UleConstants::PRI_MAX_BATCH && pri >= UleConstants::PRI_MIN_BATCH);
 		/*
 		 * This queue contains only priorities between MIN and MAX
 		 * batch.  Use the whole queue to represent these values.
 		 */
-		if ((flags & (SRQ_BORROWING|SRQ_PREEMPTED)) == 0) {
-			pri = UleRunq::RQ_NQS * (pri - PRI_MIN_BATCH) / PRI_BATCH_RANGE;
-			pri = (pri + tdq_idx) % UleRunq::RQ_NQS;
+		if ((flags & (UleConstants::SRQ_BORROWING|UleConstants::SRQ_PREEMPTED)) == 0) {
+			pri = UleConstants::RQ_NQS * (pri - UleConstants::PRI_MIN_BATCH) / UleConstants::PRI_BATCH_RANGE;
+			pri = (pri + tdq_idx) % UleConstants::RQ_NQS;
 			/*
 			 * This effectively shortens the queue by one so we
 			 * can have a one slot difference between idx and
@@ -917,7 +917,7 @@ __inline void CpuState::tdq_runq_add(UleTask *td, int flags)
 			 */
 			if (tdq_ridx != tdq_idx &&
 			    pri == tdq_ridx)
-				pri = (unsigned char)(pri - 1) % UleRunq::RQ_NQS;
+				pri = (unsigned char)(pri - 1) % UleConstants::RQ_NQS;
 		} else
 			pri = tdq_ridx;
 		td->ts_runq->runq_add_pri(td, pri, flags);
@@ -947,23 +947,23 @@ inline int CpuState::sched_shouldpreempt(int pri, int cpri, int remote)
 	/*
 	 * Always preempt idle.
 	 */
-	if (cpri >= PRI_MIN_IDLE)
+	if (cpri >= UleConstants::PRI_MIN_IDLE)
 		return (1);
 	/*
 	 * If preemption is disabled don't preempt others.
 	 */
-	if (preempt_thresh == 0)
+	if (UleConstants::preempt_thresh == 0)
 		return (0);
 	/*
 	 * Preempt if we exceed the threshold.
 	 */
-	if (pri <= preempt_thresh)
+	if (pri <= UleConstants::preempt_thresh)
 		return (1);
 	/*
 	 * If we're interactive or better and there is non-interactive
 	 * or worse running preempt only remote processors.
 	 */
-	if (remote && pri <= PRI_MAX_INTERACT && cpri > PRI_MAX_INTERACT)
+	if (remote && pri <= UleConstants::PRI_MAX_INTERACT && cpri > UleConstants::PRI_MAX_INTERACT)
 		return (1);
 	return (0);
 }
@@ -984,11 +984,11 @@ inline int CpuState::tdq_slice(){
 	 * cannot be higher priority load in the system.
 	 */
 	load = tdq_sysload - 1;
-	if (load >= SCHED_SLICE_MIN_DIVISOR)
-		return (sched_slice_min);
+	if (load >= UleConstants::SCHED_SLICE_MIN_DIVISOR)
+		return (UleConstants::sched_slice_min);
 	if (load <= 1)
-		return (sched_slice);
-	return (sched_slice / load);
+		return (UleConstants::sched_slice);
+	return (UleConstants::sched_slice / load);
 }
 
 /* 
@@ -1026,7 +1026,7 @@ void CpuState::tdq_load_add(UleTask *td)
 	//TODO: THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
 
 	tdq_load++;
-	if ((td->td_flags & TDF_NOLOAD) == 0)
+	if ((td->td_flags & UleConstants::TDF_NOLOAD) == 0)
 		tdq_sysload++;
 }
 
@@ -1041,7 +1041,7 @@ void CpuState::tdq_load_rem(UleTask *td)
 	CHECK(tdq_load != 0);
 
 	tdq_load--;
-	if ((td->td_flags & TDF_NOLOAD) == 0)
+	if ((td->td_flags & UleConstants::TDF_NOLOAD) == 0)
 		tdq_sysload--;
 }
 
@@ -1057,12 +1057,12 @@ UleTask* CpuState::tdq_choose()
 		return (td);
 	td = tdq_timeshare.runq_choose_from(tdq_ridx);
 	if (td != NULL) {
-		CHECK(td->td_priority >= PRI_MIN_BATCH);
+		CHECK(td->td_priority >= UleConstants::PRI_MIN_BATCH);
 		return (td);
 	}
 	td = tdq_idle.runq_choose();
 	if (td != NULL) {
-		CHECK(td->td_priority >= PRI_MIN_IDLE);
+		CHECK(td->td_priority >= UleConstants::PRI_MIN_IDLE);
 		return (td);
 	}
 	return (NULL);
