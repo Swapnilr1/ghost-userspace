@@ -133,6 +133,48 @@ void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
 	}
 }
 
+
+/*
+ * This routine enforces a maximum limit on the amount of scheduling history
+ * kept.  It is called after either the slptime or runtime is adjusted.  This
+ * function is ugly due to integer math.
+ */
+void UleTask::sched_interact_update()
+{
+	u_int sum;
+	sum = ts_runtime + ts_slptime;
+	if (sum <  UleConstants::SCHED_SLP_RUN_MAX)
+		return;
+	/*
+	 * This only happens from two places:
+	 * 1) We have added an unusual amount of run time from fork_exit.
+	 * 2) We have added an unusual amount of sleep time from sched_sleep().
+	 */
+	if (sum >  UleConstants::SCHED_SLP_RUN_MAX * 2) {
+		if (ts_runtime > ts_slptime) {
+			ts_runtime =  UleConstants::SCHED_SLP_RUN_MAX;
+			ts_slptime = 1;
+		} else {
+			ts_slptime =  UleConstants::SCHED_SLP_RUN_MAX;
+			ts_runtime = 1;
+		}
+		return;
+	}
+	/*
+	 * If we have exceeded by more than 1/5th then the algorithm below
+	 * will not bring us back into range.  Dividing by two here forces
+	 * us into the range of [4/5 * SCHED_INTERACT_MAX, SCHED_INTERACT_MAX]
+	 */
+	if (sum > ( UleConstants::SCHED_SLP_RUN_MAX / 5) * 6) {
+		ts_runtime /= 2;
+		ts_slptime /= 2;
+		return;
+	}
+	ts_runtime = (ts_runtime / 5) * 4;
+	ts_slptime = (ts_slptime / 5) * 4;
+}
+
+
 /*
  * This is the core of the interactivity algorithm.  Determines a score based
  * on past behavior.  It is the ratio of sleep time to run time scaled to
@@ -157,7 +199,7 @@ void UleRunq::runq_remove_idx(UleTask *td, u_char *idx)
  */
 int UleTask::sched_interact_score()
 {
-	int div;
+	uint64_t div;
 
 	/*
 	 * The score is only needed if this is likely to be an interactive
@@ -167,17 +209,18 @@ int UleTask::sched_interact_score()
 	if (UleConstants::sched_interact <= UleConstants::SCHED_INTERACT_HALF &&
 		ts_runtime >= ts_slptime)
 			return (UleConstants::SCHED_INTERACT_HALF);
-
+	
 	if (ts_runtime > ts_slptime) {
-		div = std::max(u_int(1), ts_runtime / UleConstants::SCHED_INTERACT_HALF);
+		div = std::max(u_int64_t(1), ts_runtime / UleConstants::SCHED_INTERACT_HALF);
 		return (UleConstants::SCHED_INTERACT_HALF +
 		    (UleConstants::SCHED_INTERACT_HALF - (ts_slptime / div)));
 	}
 	if (ts_slptime > ts_runtime) {
-		div = std::max(u_int(1), ts_slptime / UleConstants::SCHED_INTERACT_HALF);
+		div = std::max(u_int64_t(1), ts_slptime / UleConstants::SCHED_INTERACT_HALF);
 		return (ts_runtime / div);
 	}
 	/* runtime == slptime */
+	GHOST_DPRINT(3, stderr, "UleTask::sched_interact_score: sleep_time %d, runtime %d", ts_slptime, ts_runtime);
 	if (ts_runtime)
 		return (UleConstants::SCHED_INTERACT_HALF);
 
@@ -509,6 +552,7 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 			task->sched_priority();
 		cs->tdq_add(task, 0);
 		task->ts_slptime += absl::ToInt64Nanoseconds(MonotonicNow() - task->sleepStartTime);
+		task->sched_interact_update();
 		GHOST_DPRINT(3, stderr, "TaskRunnable: sleep time updated to %d", task->ts_slptime);
 	}
 }
@@ -786,6 +830,7 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
 
       // TODO: Update this
       next->ts_runtime = next->status_word.runtime();
+	  next->sched_interact_update();
 	  GHOST_DPRINT(3, stderr, "UleSchedule: next->ts_runtime - %d",
                    next->ts_runtime);
     } else {

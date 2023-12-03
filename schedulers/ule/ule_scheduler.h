@@ -52,6 +52,8 @@ static constexpr int	PRI_FIFO	=(PRI_FIFO_BIT | PRI_REALTIME);
 static constexpr int PRIO_MIN = -20;
 static constexpr int PRIO_MAX = 20;
 
+static constexpr u_int64_t SCHED_SLP_RUN_MAX = 5000000000;
+
 /*
  * These macros determine priorities for non-interactive threads.  They are
  * assigned a priority based on their recent cpu utilization as expressed
@@ -179,8 +181,8 @@ struct UleTask : public Task<> {
 	u_char		td_base_user_pri = UleConstants::PRI_MIN_TIMESHARE; /* (t) Base user pri */
   u_char		td_lend_user_pri = UleConstants::PRI_MAX; /* (t) Lend user pri. */
   absl::Time sleepStartTime; /* Time when thread goes for voluntary sleep time*/
-  u_int		ts_slptime = 0;	/* Duration we vol. slept - ns */
-	u_int		ts_runtime = 0;	/* Duration we were running  -ns */
+  u_int64_t		ts_slptime = 0;	/* Duration we vol. slept - ns */
+	u_int64_t		ts_runtime = 0;	/* Duration we were running  -ns */
   int nice = 0;
   
 	int		td_flags = 0;	/* (t) TDF_* flags. */
@@ -231,6 +233,7 @@ struct UleTask : public Task<> {
   int sched_interact_score();
   void sched_priority();
   void sched_user_prio(u_char prio);
+  void sched_interact_update();
 };
 
 struct CpuState {
