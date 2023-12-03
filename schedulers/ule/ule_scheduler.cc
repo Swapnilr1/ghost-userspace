@@ -526,9 +526,6 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 }
 
 void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
-  const ghost_msg_payload_task_new* payload =
-      static_cast<const ghost_msg_payload_task_new*>(msg.payload());
-
   // TODO: Adjust time slices stats
 	task->ts_cpu = MyCpu();
 	CpuState *cs = &cpu_states_[task->ts_cpu];
@@ -542,19 +539,14 @@ void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
 		}
 	}
 
-	if (payload->runnable) {
-		task->td_state = UleTask::TDS_CAN_RUN;
-		/*
-		* Recalculate the priority before we select the target cpu or
-		* run-queue.
-		*/
-		if (task->basePriority() == UleConstants::PRI_TIMESHARE)
-			task->sched_priority();
-		cs->tdq_add(task, 0);
-		task->ts_slptime += absl::ToInt64Nanoseconds(MonotonicNow() - task->sleepStartTime);
-		task->sched_interact_update();
-		GHOST_DPRINT(3, stderr, "TaskRunnable: sleep time updated to %d", task->ts_slptime);
-	}
+	task->ts_slptime += absl::ToInt64Nanoseconds(MonotonicNow() - task->sleepStartTime);
+	task->sched_interact_update();
+	task->td_state = UleTask::TDS_CAN_RUN;
+	task->sched_priority();
+	sched_prio(task, task->td_user_pri);
+	cs->tdq_add(task, 0);
+	
+	GHOST_DPRINT(3, stderr, "TaskRunnable: sleep time updated to %d", task->ts_slptime);
 }
 
 // Disable thread safety analysis as this function is called with rq lock held
@@ -648,6 +640,11 @@ void UleScheduler::TaskPreempted(UleTask* task, const Message& msg) {
   if (!payload->from_switchto) {
     CHECK_EQ(cs->tdq_curthread, task);
   }
+
+  task->sched_interact_update();
+  task->td_state = UleTask::TDS_CAN_RUN;
+  task->sched_priority();
+  sched_prio(task, task->td_user_pri);
 
   // Updates the task state accordingly. This is safe because this task should
   // be associated with this CPU's agent and protected by this CPU's RQ lock.
@@ -947,7 +944,9 @@ __inline void CpuState::tdq_runq_add(UleTask *td, int flags)
 	}
 	if (pri < UleConstants::PRI_MIN_BATCH) {
 		td->ts_runq = &tdq_realtime;
+		GHOST_DPRINT(1, stderr, "Adding task with tid = %d to realtime queue\n", td->gtid.tid()) ;
 	} else if (pri <= UleConstants::PRI_MAX_BATCH) {
+		GHOST_DPRINT(1, stderr, "Adding task with tid = %d to batch queue\n", td->gtid.tid()) ;
 		td->ts_runq = &tdq_timeshare;
 		CHECK(pri <= UleConstants::PRI_MAX_BATCH && pri >= UleConstants::PRI_MIN_BATCH);
 		/*
