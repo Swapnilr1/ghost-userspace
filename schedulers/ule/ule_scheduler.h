@@ -19,7 +19,7 @@
 #include "lib/base.h"
 #include "lib/scheduler.h"
 
-static const absl::Time start = absl::Now();
+static const absl::Time start = ghost::MonotonicNow();
 
 namespace ghost {
 
@@ -53,7 +53,7 @@ static constexpr int PRIO_MIN = -20;
 static constexpr int PRIO_MAX = 20;
 
 static constexpr u_int64_t SCHED_SLP_RUN_MAX = 5000000000;
-
+static constexpr u_int64_t SCHED_SLP_RUN_FORK = SCHED_SLP_RUN_MAX/10;
 /*
  * These macros determine priorities for non-interactive threads.  They are
  * assigned a priority based on their recent cpu utilization as expressed
@@ -205,11 +205,6 @@ struct UleTask : public Task<> {
   UleRunq	*ts_runq = nullptr;	/* Run-queue we're queued on. */
 	short		ts_flags = 0;	/* TSF_* flags. */
 	int		ts_cpu = 0;		/* CPU that we have affinity for. */
-	int		ts_rltick = 0;	/* Real last tick, for affinity. */
-	int		ts_slice = 0;	/* Ticks of slice remaining. */
-	int		ts_ltick = 0;	/* Last tick that we were running on */
-	int		ts_ftick = 0;	/* First tick that we were running on */
-	int		ts_ticks = 0;	/* Tick count */
 
   /*
   * Priority classes. Only PRI_TIMESHARE is relevant within userspace scheduling
@@ -326,9 +321,9 @@ struct CpuState {
   inline CpuState *sched_setcpu(UleTask *, int, int);
   inline void thread_unblock_switch(UleTask *, struct mtx *);
 
-  static int getSchedPriTicks(UleTask* ts){						
-    return (SCHED_TICK_HZ((ts))/(roundup(SCHED_TICK_TOTAL((ts)), UleConstants::SCHED_PRI_RANGE) / UleConstants::SCHED_PRI_RANGE));
-  }
+  // static int getSchedPriTicks(UleTask* ts){						
+  //   return (SCHED_TICK_HZ((ts))/(roundup(SCHED_TICK_TOTAL((ts)), UleConstants::SCHED_PRI_RANGE) / UleConstants::SCHED_PRI_RANGE));
+  // }
   
   //Can be considered later if we enable CPU topology
   // int sysctl_kern_sched_topology_spec(SYSCTL_HANDLER_ARGS);
@@ -407,6 +402,9 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
 
   UleTask* sched_choose(CpuState *tdq);
 
+   // One function to do everything related to child, not split into multiple functions like in actual FreeBSD code
+  void sched_set_child_fields(UleTask *parent, UleTask *child);
+
   // Empties the channel associated with cpu and dispatches the messages.
   void DrainChannel(const Cpu& cpu);
 
@@ -441,43 +439,6 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   // Attaches tasks defined by the load balance environment.
   inline void AttachTasks(struct LoadBalanceEnv& env);
 
-  // Detaches tasks required by the load balance environment.
-  // Returns: the number of detached tasks.
-  // inline int DetachTasks(struct LoadBalanceEnv& env);
-
-  // Calculates the imbalance between source CPU and destination
-  // CPU.
-  // inline int CalculateImbalance(LoadBalanceEnv& env);
-
-  // Finds the CPU with most RUNNABLE tasks. Returns the ID of the busiest CPU.
-  // inline int FindBusiestQueue();
-
-  // Determines whether to run load balancing in this context. Specifically,
-  // returns true if this CPU became idle just now (`newly_idle` is true), the
-  // current CPU is the first idle CPU, or (if this CPU is not idle) the first
-  // CPU. This function roughly follows `should_we_balance` function in
-  // `kernel/sched/fair.c`.
-  // inline bool ShouldWeBalance(LoadBalanceEnv& env);
-
-  // Tries to load balance when this CPU is about to become idle and attempts
-  // to take some tasks from another CPU. Should only be called inside the
-  // schedule loop.
-  // Returns: one of the pulled tasks picked via `PickNextTask` or nullptr if
-  // failed pull any task.
-  // inline UleTask* NewIdleBalance(CpuState* cs);
-
-  // Tries to balance the load across different CPUs to make sure each CPU has
-  // about an equal amount of work. The gist of the algorithm is to balance the
-  // busiest and least busy core.
-  // Following this check, we find the rq with the heaviest load and balance it
-  // with the rq with the lightest load.
-  // int LoadBalance(CpuState* cs, CpuIdleType idle_type);
-
-  // Migrate takes task and places it on cpu's run queue.
-  // bool Migrate(UleTask* task, Cpu cpu, BarrierToken seqnum);
-  // Migrates pending tasks in the migration queue.
- 
-  // Cpu SelectTaskRq(UleTask* task);
   void DumpAllTasks();
 
   void PingCpu(const Cpu& cpu);
@@ -508,7 +469,8 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   CpuState cpu_states_[MAX_CPUS];
   Channel* default_channel_ = nullptr;
 
-  bool idle_load_balancing_;
+  absl::flat_hash_map<int64_t, UleTask*> tid_to_task;
+  absl::flat_hash_map<UleTask*, UleTask*> child_to_parent;
 };
 
 std::unique_ptr<UleScheduler> MultiThreadedUleScheduler(
