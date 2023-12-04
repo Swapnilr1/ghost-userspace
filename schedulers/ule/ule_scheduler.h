@@ -19,7 +19,7 @@
 #include "lib/base.h"
 #include "lib/scheduler.h"
 
-static const absl::Time start = absl::Now();
+static const absl::Time start = ghost::MonotonicNow();
 
 namespace ghost {
 
@@ -441,43 +441,6 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   // Attaches tasks defined by the load balance environment.
   inline void AttachTasks(struct LoadBalanceEnv& env);
 
-  // Detaches tasks required by the load balance environment.
-  // Returns: the number of detached tasks.
-  // inline int DetachTasks(struct LoadBalanceEnv& env);
-
-  // Calculates the imbalance between source CPU and destination
-  // CPU.
-  // inline int CalculateImbalance(LoadBalanceEnv& env);
-
-  // Finds the CPU with most RUNNABLE tasks. Returns the ID of the busiest CPU.
-  // inline int FindBusiestQueue();
-
-  // Determines whether to run load balancing in this context. Specifically,
-  // returns true if this CPU became idle just now (`newly_idle` is true), the
-  // current CPU is the first idle CPU, or (if this CPU is not idle) the first
-  // CPU. This function roughly follows `should_we_balance` function in
-  // `kernel/sched/fair.c`.
-  // inline bool ShouldWeBalance(LoadBalanceEnv& env);
-
-  // Tries to load balance when this CPU is about to become idle and attempts
-  // to take some tasks from another CPU. Should only be called inside the
-  // schedule loop.
-  // Returns: one of the pulled tasks picked via `PickNextTask` or nullptr if
-  // failed pull any task.
-  // inline UleTask* NewIdleBalance(CpuState* cs);
-
-  // Tries to balance the load across different CPUs to make sure each CPU has
-  // about an equal amount of work. The gist of the algorithm is to balance the
-  // busiest and least busy core.
-  // Following this check, we find the rq with the heaviest load and balance it
-  // with the rq with the lightest load.
-  // int LoadBalance(CpuState* cs, CpuIdleType idle_type);
-
-  // Migrate takes task and places it on cpu's run queue.
-  // bool Migrate(UleTask* task, Cpu cpu, BarrierToken seqnum);
-  // Migrates pending tasks in the migration queue.
- 
-  // Cpu SelectTaskRq(UleTask* task);
   void DumpAllTasks();
 
   void PingCpu(const Cpu& cpu);
@@ -508,7 +471,7 @@ class UleScheduler : public BasicDispatchScheduler<UleTask> {
   CpuState cpu_states_[MAX_CPUS];
   Channel* default_channel_ = nullptr;
 
-  bool idle_load_balancing_;
+  absl::flat_hash_map<int64_t, UleTask*> tid_to_task;
 };
 
 std::unique_ptr<UleScheduler> MultiThreadedUleScheduler(

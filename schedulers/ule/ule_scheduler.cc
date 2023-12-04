@@ -31,7 +31,7 @@
   do {                                                           \
     if (ABSL_PREDICT_TRUE(verbose() < level)) break;             \
     absl::FPrintF(stderr, "DUle: [%.6f] cpu %d: %s\n",           \
-                  absl::ToDoubleSeconds(MonotonicNow() - start), \
+                  absl::ToDoubleMilliseconds(MonotonicNow() - start), \
                   sched_getcpu(), message);                      \
   } while (0)
 
@@ -405,28 +405,24 @@ UleScheduler::UleScheduler(Enclave* enclave, CpuList cpulist,
                            std::shared_ptr<TaskAllocator<UleTask>> allocator,
                            absl::Duration min_granularity,
                            absl::Duration latency)
-    : BasicDispatchScheduler(enclave, std::move(cpulist), std::move(allocator)),
-      idle_load_balancing_(
-          absl::GetFlag(FLAGS_experimental_enable_idle_load_balancing)) {
+    : BasicDispatchScheduler(enclave, std::move(cpulist), std::move(allocator)) {
+	
 	for (const Cpu& cpu : cpus()) {
-    CpuState* cs = cpu_state(cpu);
-    cs->tdq_id = cpu.id();
+    	CpuState* cs = cpu_state(cpu);
+    	cs->tdq_id = cpu.id();
+    	{	
+      		//absl::MutexLock l(&cs->run_queue .mu_);
+    		//   cs->run_queue.SetMinGranularity(min_granularity_);
+    		//   cs->run_queue.SetLatency(latency_);
+    	}
 
-    {
-      //absl::MutexLock l(&cs->run_queue .mu_);
-    //   cs->run_queue.SetMinGranularity(min_granularity_);
-    //   cs->run_queue.SetLatency(latency_);
-    }
-
-    cs->channel = enclave->MakeChannel(GHOST_MAX_QUEUE_ELEMS, cpu.numa_node(),
+    	cs->channel = enclave->MakeChannel(GHOST_MAX_QUEUE_ELEMS, cpu.numa_node(),
                                        MachineTopology()->ToCpuList({cpu}));
-    // This channel pointer is valid for the lifetime of CfsScheduler
-    if (!default_channel_) {
-      default_channel_ = cs->channel.get();
-    }
-  }
-
-
+    	// This channel pointer is valid for the lifetime of CfsScheduler
+    	if (!default_channel_) {
+      		default_channel_ = cs->channel.get();
+   		}
+  	}
 }
 
 void UleScheduler::DumpAllTasks() {
@@ -504,8 +500,7 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
   	const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
-
-  GHOST_DPRINT(3, stderr, "TaskNew: task = %p, tid = %d, parent tid = %d\n", task, Gtid(payload->gtid).tid(), Gtid(payload->parent_gtid).tid());
+    GHOST_DPRINT(3, stderr, "TaskNew: task = %p, tid = %d, parent tid = %d\n", task, Gtid(payload->gtid).tid(), Gtid(payload->parent_gtid).tid());
 	task->ts_cpu = MyCpu();
 	CpuState *cs = &cpu_states_[task->ts_cpu];
 	PrintDebugTaskMessage("TaskNew: ",cs, task);
@@ -513,6 +508,11 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 	task->sched_priority();
 	sched_prio(task, task->td_base_pri); // ULE: In sched_nice we update the td_priority
 	task->seqnum = msg.seqnum();
+
+	if (tid_to_task.contains(Gtid(payload->parent_gtid).tid())) {
+		UleTask *parent = tid_to_task[Gtid(payload->parent_gtid).tid()];
+	}
+
 	if (payload->runnable) {
 		task->td_state = UleTask::TDS_CAN_RUN;
 		/*
@@ -523,6 +523,7 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 			task->sched_priority();
 		cs->tdq_add(task, 0);
 	}
+	tid_to_task[task->gtid.tid()] = task;
 }
 
 void UleScheduler::TaskRunnable(UleTask* task, const Message& msg) {
@@ -689,7 +690,7 @@ void UleScheduler::PutPrevTask(UleTask* task) {
 }
 
 void UleScheduler::CpuTick(const Message& msg) {
-
+	DPRINT_Ule(3, absl::StrFormat("CpuTick: \n"));
 }
 
 UleTask* UleScheduler::sched_choose(CpuState *tdq) {
