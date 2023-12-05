@@ -367,7 +367,7 @@ void UleScheduler::sched_rem(UleTask *td)
  */
 void UleScheduler::sched_add(UleTask *td, int flags)
 {
-	CpuState *tdq = &cpu_states_[td->ts_cpu];;
+	CpuState *tdq = &cpu_states_[td->ts_cpu];
 
 	// THREAD_LOCK_ASSERT(td, MA_OWNED);
 	/*
@@ -520,7 +520,7 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 	PrintDebugTaskMessage("TaskNew: ",cs, task);
 	task->nice=payload->nice;
 	task->sched_priority();
-	sched_prio(task, task->td_base_pri); // ULE: In sched_nice we update the td_priority
+	sched_prio(task, task->td_user_pri);
 	task->seqnum = msg.seqnum();
 
 	if (tid_to_task.contains(Gtid(payload->parent_gtid).tid())) {
@@ -531,6 +531,8 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 		parent->ts_runtime += 1'000'000; // 1 millisecond
 		parent->sched_interact_update();
 		parent->sched_priority();
+		sched_prio(task, task->td_user_pri);
+		sched_prio(parent, parent->td_user_pri);
 	}
 
 	if (payload->runnable) {
@@ -907,7 +909,18 @@ void UleScheduler::TaskAffinityChanged(UleTask* task, const Message& msg) {
   
 }
 
-void UleScheduler::TaskPriorityChanged(UleTask* task, const Message& msg) { 
+void UleScheduler::TaskPriorityChanged(UleTask* task, const Message& msg) {
+	const ghost_msg_payload_task_priority_changed* payload =
+      static_cast<const ghost_msg_payload_task_priority_changed*>(
+          msg.payload());
+
+	GHOST_DPRINT(1, stderr, "Nice value changed for task with tid = %d to %d\n", task->gtid.tid(), payload->nice);
+	CpuState *tdq = &cpu_states_[task->ts_cpu];
+	tdq->tdq_lock.AssertHeld();
+
+	task->nice = payload->nice;
+	task->sched_priority();
+	sched_prio(task, task->td_user_pri);
 }
 
 std::unique_ptr<UleScheduler> MultiThreadedUleScheduler(
