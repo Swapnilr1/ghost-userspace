@@ -88,8 +88,9 @@ static constexpr int	PRI_BATCH_RANGE	= (PRI_TIMESHARE_RANGE - PRI_INTERACT_RANGE
 static constexpr int	PUSER	= (PRI_MIN_TIMESHARE);
 static constexpr int	SCHED_TICK_SHIFT= 10;
 //TODO: find the hz value
-static constexpr int hz=10;
-
+static constexpr int hz = 1000;
+static constexpr absl::Duration SCHED_TICK_TARG = absl::Nanoseconds(hz * 10);
+static constexpr absl::Duration	SCHED_TICK_MAX = absl::Nanoseconds(hz * 10 + hz);
 
 static constexpr int 	PRI_MIN_KERN = 48;
 static constexpr int preempt_thresh = PRI_MIN_KERN;
@@ -182,11 +183,15 @@ struct UleTask : public Task<> {
   u_char		td_lend_user_pri = UleConstants::PRI_MAX; /* (t) Lend user pri. */
   absl::Time sleepStartTime; /* Time when thread goes for voluntary sleep time*/
   u_int64_t		ts_slptime = 0;	/* Duration we vol. slept - ns */
-	u_int64_t		ts_runtime = 0;	/* Duration we were running  -ns */
+	u_int64_t		ts_runtime = 0;	/* Duration we were running (Cumulative) -ns */
+  u_int64_t		ts_runtime_before_current = 0;	/* Cumulative duration we were running before the current run -ns */
   int nice = 0;
+  int		ts_slice;	/* Ticks of slice used. */
   
 	int		td_flags = 0;	/* (t) TDF_* flags. */
 	int		td_inhibitors = 0;	/* (t) Why can not run. */
+
+  bool is_preempted_on_time_slice = false;
 
   enum td_states {
 		TDS_INACTIVE = 0x0,
@@ -264,8 +269,7 @@ struct CpuState {
 
 #define	SCHED_TICK_HZ(ts)	((ts)->ts_ticks >> UleConstants::SCHED_TICK_SHIFT)
 #define	SCHED_TICK_TOTAL(ts)	(std::max((ts)->ts_ltick - (ts)->ts_ftick, UleConstants::hz))
-#define roundup(x, y)   ((((x) % (y)) == 0) ? \
-	                (x) : ((x) + ((y) - ((x) % (y)))))
+#define roundup(x, y) 		((((x)+((y)-1))/(y))*(y))
 
 
   // current points to the CfsTask that we most recently picked to run on the

@@ -56,10 +56,12 @@ void UleRunq::runq_add(UleTask *task, int flags) {
 	int pri = task->td_priority / UleConstants::RQ_PPQ;
 	task->td_rqindex = pri;
 	runq_setbit(pri);
-	if (flags & UleConstants::SRQ_PREEMPTED) {
+	if (!task->is_preempted_on_time_slice){
 		runq_[pri].push_front(task);
     task->td_runq = runq_[pri].begin();
 	} else {
+		task->ts_slice=0;
+		task->is_preempted_on_time_slice = false;
 		runq_[pri].push_back(task);
     task->td_runq = std::prev(runq_[pri].end());
 	}
@@ -68,10 +70,12 @@ void UleRunq::runq_add_pri(UleTask *task, u_char pri, int flags) {
 	CHECK(pri < UleConstants::RQ_NQS);
 	task->td_rqindex = pri;
 	runq_setbit(pri);
-	if (flags & UleConstants::SRQ_PREEMPTED) {
+	if (!task->is_preempted_on_time_slice){
 		runq_[pri].push_front(task);
     task->td_runq = runq_[pri].begin();
 	} else {
+		task->ts_slice=0;
+		task->is_preempted_on_time_slice = false;
 		runq_[pri].push_back(task);
     task->td_runq = std::prev(runq_[pri].end());
 	}
@@ -270,6 +274,7 @@ void UleTask::sched_priority()
 	this->sched_user_prio(pri);
 	return;
 }
+
 
 /*
  * Standard entry for setting the priority to an absolute value.
@@ -619,7 +624,6 @@ void UleScheduler::TaskDead(UleTask* task, const Message& msg) {
 void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
 	const ghost_msg_payload_task_yield* payload =
 	static_cast<const ghost_msg_payload_task_yield*>(msg.payload());
-	Cpu cpu = topology()->cpu(MyCpu());
 	CpuState* cs = &cpu_states_[task->ts_cpu];
 	PrintDebugTaskMessage( "TaskYield: ",cs , task);
 	cs->tdq_lock.AssertHeld();
@@ -671,6 +675,13 @@ void UleScheduler::TaskPreempted(UleTask* task, const Message& msg) {
   if (!payload->from_switchto) {
     CHECK_EQ(cs->tdq_curthread, task);
   }
+	
+	// Check if after current execution, the task has consumed the time slice
+	// Doing it before scaling the runtime through sched_interact_update as the ts_runtime_before_current was recorded before scaling
+	task->ts_slice += task->ts_runtime - task->ts_runtime_before_current;
+	if (task->ts_slice >= cs->tdq_slice()){
+		task->is_preempted_on_time_slice = true;
+	}
 
   task->sched_interact_update();
   task->td_state = UleTask::TDS_CAN_RUN;
@@ -837,7 +848,7 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
     while (next->status_word.on_cpu()) {
       Pause();
     }
-
+	next->ts_runtime_before_current = next->ts_runtime; //storing the runtime until now, to calculate the latest runtime
     if (req->Commit()) {
       GHOST_DPRINT(3, stderr, "Task %s oncpu %d", next->gtid.describe(),
                    cpu.id());
