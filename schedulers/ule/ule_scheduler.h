@@ -105,8 +105,8 @@ static constexpr int	SCHED_SLICE_DEFAULT_DIVISOR =	10;	/* ~94 ms, 12 stathz tick
 static constexpr int	SCHED_SLICE_MIN_DIVISOR	= 6;	/* DEFAULT/MIN = ~16 ms. */
 
   // sched_slice:		Runtime of each thread before rescheduling.
-static constexpr int sched_slice = 10;	/* reset during boot. */
-static constexpr int sched_slice_min=1;	/* reset during boot. */
+static constexpr uint64_t sched_slice = 78'000'000;	/* reset during boot. */
+static constexpr uint64_t sched_slice_min= 7'870'000;	/* reset during boot. */
 
 
 

@@ -675,13 +675,6 @@ void UleScheduler::TaskPreempted(UleTask* task, const Message& msg) {
   if (!payload->from_switchto) {
     CHECK_EQ(cs->tdq_curthread, task);
   }
-	
-	// Check if after current execution, the task has consumed the time slice
-	// Doing it before scaling the runtime through sched_interact_update as the ts_runtime_before_current was recorded before scaling
-	task->ts_slice += task->ts_runtime - task->ts_runtime_before_current;
-	if (task->ts_slice >= cs->tdq_slice()){
-		task->is_preempted_on_time_slice = true;
-	}
 
   task->sched_interact_update();
   task->td_state = UleTask::TDS_CAN_RUN;
@@ -868,10 +861,18 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
       //         = wall_runtime * precomputed_inverse_weight / 2^22
 
       // TODO: Update this
-      next->ts_runtime = next->status_word.runtime();
-	  next->sched_interact_update();
-	  GHOST_DPRINT(3, stderr, "UleSchedule: next->ts_runtime - %d",
+    next->ts_runtime = next->status_word.runtime();
+		GHOST_DPRINT(3, stderr, "UleSchedule: next->ts_runtime - %d",
                    next->ts_runtime);
+    // Check if after current execution, the task has consumed the time slice
+	  // Doing it before scaling the runtime through sched_interact_update as the ts_runtime_before_current was recorded before scaling
+	  next->ts_slice += next->ts_runtime - next->ts_runtime_before_current;
+	  if (next->ts_slice >= cs->tdq_slice()) {
+			next->is_preempted_on_time_slice = true;
+		}
+	  next->sched_interact_update();
+	  
+
     } else {
       GHOST_DPRINT(3, stderr, "UleSchedule: commit failed (state=%d)",
                    req->state());
