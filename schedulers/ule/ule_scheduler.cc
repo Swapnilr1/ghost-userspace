@@ -597,7 +597,12 @@ void UleScheduler::HandleTaskDone(UleTask* task) {
 	if (task->td_rqindex != -1) {
 		cs->tdq_runq_rem(task);
 	}
-  	allocator()->FreeTask(task);
+	// Parent can detach from child thread and exit
+	// In those cases, child_to_parent will point to freed memory
+	// So don't free the parent task
+	// This is a memory leak but is acceptable for our use
+
+  	//allocator()->FreeTask(task);
   } else {
 	task->td_state = UleTask::TDS_FINISHED;
   }
