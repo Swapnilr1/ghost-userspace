@@ -56,12 +56,11 @@ void UleRunq::runq_add(UleTask *task, int flags) {
 	int pri = task->td_priority / UleConstants::RQ_PPQ;
 	task->td_rqindex = pri;
 	runq_setbit(pri);
-	if (!task->is_preempted_on_time_slice){
+	if (task->was_preempted_before_time_slice){
 		runq_[pri].push_front(task);
-    task->td_runq = runq_[pri].begin();
+    	task->td_runq = runq_[pri].begin();
 	} else {
-		task->ts_slice=0;
-		task->is_preempted_on_time_slice = false;
+		task->was_preempted_before_time_slice = false;
 		runq_[pri].push_back(task);
     task->td_runq = std::prev(runq_[pri].end());
 	}
@@ -70,12 +69,12 @@ void UleRunq::runq_add_pri(UleTask *task, u_char pri, int flags) {
 	CHECK(pri < UleConstants::RQ_NQS);
 	task->td_rqindex = pri;
 	runq_setbit(pri);
-	if (!task->is_preempted_on_time_slice){
+	if (task->was_preempted_before_time_slice){
 		runq_[pri].push_front(task);
     task->td_runq = runq_[pri].begin();
 	} else {
 		task->ts_slice=0;
-		task->is_preempted_on_time_slice = false;
+		task->was_preempted_before_time_slice = false;
 		runq_[pri].push_back(task);
     task->td_runq = std::prev(runq_[pri].end());
 	}
@@ -210,6 +209,7 @@ int UleTask::sched_interact_score()
 	 * task.  Don't go through the expense of computing it if there's
 	 * no chance.
 	 */
+	GHOST_DPRINT(3, stderr, "UleTask::sched_interact_score: tid: %d, sleep_time %d, runtime %d", this->gtid.tid(), ts_slptime, ts_runtime);
 	if (UleConstants::sched_interact <= UleConstants::SCHED_INTERACT_HALF &&
 		ts_runtime >= ts_slptime)
 			return (UleConstants::SCHED_INTERACT_HALF);
@@ -224,7 +224,7 @@ int UleTask::sched_interact_score()
 		return (ts_runtime / div);
 	}
 	/* runtime == slptime */
-	GHOST_DPRINT(3, stderr, "UleTask::sched_interact_score: sleep_time %d, runtime %d", ts_slptime, ts_runtime);
+	
 	if (ts_runtime)
 		return (UleConstants::SCHED_INTERACT_HALF);
 
@@ -503,7 +503,7 @@ void UleScheduler::sched_set_child_fields(UleTask *parent, UleTask *child) {
 	child->td_base_pri = parent->td_base_pri;
 	child->td_priority = child->td_base_pri;
 
-	// TODO slice
+	child->ts_slice =  cpu_states_[child->ts_cpu].tdq_slice() - UleConstants::sched_slice_min;
 
 	auto sum = child->ts_runtime + child->ts_slptime;
 	if (sum > UleConstants::SCHED_SLP_RUN_FORK) {
@@ -519,7 +519,7 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
   	const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
-    GHOST_DPRINT(3, stderr, "TaskNew: task = %p, tid = %d, parent tid = %d\n", task, Gtid(payload->gtid).tid(), Gtid(payload->parent_gtid).tid());
+    GHOST_DPRINT(3, stderr, "TaskNew: task = %p, tid = %d, tgid = %d\n", task, Gtid(payload->gtid).tid(), Gtid(payload->gtid).tgid());
 	task->ts_cpu = MyCpu();
 	CpuState *cs = &cpu_states_[task->ts_cpu];
 	PrintDebugTaskMessage("TaskNew: ",cs, task);
@@ -528,8 +528,8 @@ void UleScheduler::TaskNew(UleTask* task, const Message& msg) {
 	sched_prio(task, task->td_user_pri);
 	task->seqnum = msg.seqnum();
 
-	if (tid_to_task.contains(Gtid(payload->parent_gtid).tid())) {
-		UleTask *parent = tid_to_task[Gtid(payload->parent_gtid).tid()];
+	if (tid_to_task.contains(Gtid(payload->gtid).tgid())) {
+		UleTask *parent = tid_to_task[Gtid(payload->gtid).tgid()];
 		child_to_parent[task] = parent;
 		sched_set_child_fields(parent, task);
 		task->sched_priority();
@@ -633,6 +633,8 @@ void UleScheduler::TaskYield(UleTask* task, const Message& msg) {
 	PrintDebugTaskMessage( "TaskYield: ",cs , task);
 	cs->tdq_lock.AssertHeld();
 
+	task->was_preempted_before_time_slice = false;
+	task->ts_slice = 0;
 	// If this task is not from a switchto chain, it should be the current task on
 	// this CPU.
 	if (!payload->from_switchto) {
@@ -654,6 +656,8 @@ void UleScheduler::TaskBlocked(UleTask* task, const Message& msg) {
 	cs->tdq_lock.AssertHeld();
 	task->sleepStartTime=MonotonicNow();
 
+	task->was_preempted_before_time_slice = false;
+	task->ts_slice = 0;
 	// If this task is not from a switchto chain, it should be the current task on
 	// this CPU.
 	if (!payload->from_switchto) {
@@ -872,9 +876,11 @@ void UleScheduler::UleSchedule(const Cpu& cpu, BarrierToken agent_barrier,
     // Check if after current execution, the task has consumed the time slice
 	  // Doing it before scaling the runtime through sched_interact_update as the ts_runtime_before_current was recorded before scaling
 	  next->ts_slice += next->ts_runtime - next->ts_runtime_before_current;
-	  if (next->ts_slice >= cs->tdq_slice()) {
-			next->is_preempted_on_time_slice = true;
-		}
+	  if (next->ts_slice < cs->tdq_slice()) {
+	      next->was_preempted_before_time_slice = true;
+	  } else {
+		  next->ts_slice = 0;
+	  }
 	  next->sched_interact_update();
 	  
 

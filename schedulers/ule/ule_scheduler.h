@@ -191,7 +191,7 @@ struct UleTask : public Task<> {
 	int		td_flags = 0;	/* (t) TDF_* flags. */
 	int		td_inhibitors = 0;	/* (t) Why can not run. */
 
-  bool is_preempted_on_time_slice = false;
+  bool was_preempted_before_time_slice = false;
 
   enum td_states {
 		TDS_INACTIVE = 0x0,
